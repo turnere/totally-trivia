@@ -1,0 +1,6 @@
+# The live database — all questions, answers, and stats. Never commit; back up separately.
+data/
+
+node_modules/
+.DS_Store
+.claude/settings.local.json

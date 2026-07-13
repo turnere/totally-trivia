@@ -1,0 +1,12 @@
+{
+  "name": "totally-trivia",
+  "version": "1.0.0",
+  "description": "Standup trivia: guess first, then multiple choice. Two points if you stick the landing.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
