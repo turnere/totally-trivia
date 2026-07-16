@@ -77,6 +77,12 @@ for (const stmt of [
   try { db.exec(stmt); } catch { /* column already exists */ }
 }
 
+// Bird avatar species — the players.emoji column stores one of these slugs (or '' for initials).
+const BIRD_AVATARS = new Set([
+  'cardinal', 'bluejay', 'owl', 'penguin', 'flamingo', 'mallard',
+  'chickadee', 'goldfinch', 'toucan', 'puffin', 'hummingbird', 'crow',
+]);
+
 // ---------- helpers ----------
 
 function todayStr() {
@@ -390,7 +396,8 @@ route('POST', /^\/api\/login$/, async (req, res) => {
     if (!name || name.length > 30) return fail(res, 400, 'Name required (max 30 chars)');
     const existing = db.prepare('SELECT id FROM players WHERE lower(name) = lower(?)').get(name);
     if (existing) return fail(res, 409, 'That name is taken — pick yourself from the list instead');
-    db.prepare('INSERT INTO players (name, emoji) VALUES (?, ?)').run(name, '');
+    const bird = BIRD_AVATARS.has(body.avatar) ? body.avatar : '';
+    db.prepare('INSERT INTO players (name, emoji) VALUES (?, ?)').run(name, bird);
     player = db.prepare('SELECT * FROM players WHERE lower(name) = lower(?)').get(name);
     broadcast();
   }
@@ -414,6 +421,16 @@ route('GET', /^\/api\/events$/, (req, res) => {
   res.write(': connected\n\n');
   sseClients.add(res);
   req.on('close', () => sseClients.delete(res));
+});
+
+// Change your own bird avatar ('' goes back to initials).
+route('POST', /^\/api\/avatar$/, async (req, res, player) => {
+  const body = await readBody(req);
+  const bird = body.avatar === '' || BIRD_AVATARS.has(body.avatar) ? body.avatar : null;
+  if (bird === null) return fail(res, 400, 'No such bird');
+  db.prepare('UPDATE players SET emoji = ? WHERE id = ?').run(bird, player.id);
+  broadcast();
+  json(res, 200, { ok: true });
 });
 
 // --- playing (live) ---

@@ -18,7 +18,15 @@ const S = {
 };
 
 const AV_COLORS = ['#3574e3', '#ff5050', '#3d4fd7', '#a8850b', '#1b24a2', '#797575', '#050039', '#444444'];
-function avatar(name) {
+const BIRDS = {
+  cardinal: 'Cardinal', bluejay: 'Blue Jay', owl: 'Owl', penguin: 'Penguin',
+  flamingo: 'Flamingo', mallard: 'Mallard', chickadee: 'Chickadee', goldfinch: 'Goldfinch',
+  toucan: 'Toucan', puffin: 'Puffin', hummingbird: 'Hummingbird', crow: 'Crow',
+};
+function avatar(name, bird) {
+  if (bird && BIRDS[bird]) {
+    return `<img class="av-img" src="/birds/${bird}.svg" alt="${esc(BIRDS[bird])}" title="${esc(BIRDS[bird])}">`;
+  }
   let h = 0;
   for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   const initial = String(name).trim().charAt(0).toUpperCase() || '?';
@@ -111,10 +119,12 @@ function render() {
       <div class="logo">Totally <span>Trivia</span></div>
       ${g.round ? `<div class="topic">${esc(g.round.topic)}</div>` : ''}
       <div class="spacer"></div>
-      <div class="whoami">${avatar(g.me.name)} ${esc(g.me.name)}${g.isHost ? ' · <b>host</b>' : ''}
+      <div class="whoami">
+        <button class="ghost" onclick="S.showBirdPicker=!S.showBirdPicker;render()" title="Change your bird">${avatar(g.me.name, g.me.emoji)} ${esc(g.me.name)}</button>${g.isHost ? '<b>host</b>' : ''}
         <button class="ghost" onclick="logout()">log out</button>
       </div>
     </header>
+    ${S.showBirdPicker ? renderBirdPicker() : ''}
     <nav class="tabs">
       ${['game', 'history', 'stats'].map(v =>
         `<button class="${S.view === v ? 'active' : ''}" onclick="setView('${v}')">${{ game: 'Play', history: 'History', stats: 'Stats' }[v]}</button>`).join('')}
@@ -122,6 +132,24 @@ function render() {
     ${S.view === 'game' ? renderGame() : S.view === 'history' ? renderHistory() : renderStats()}
   `;
   restoreFocus(focusedId, selStart);
+}
+
+function renderBirdPicker() {
+  const mine = S.game.me.emoji || '';
+  return `<div class="card">
+    <h2>Pick your bird</h2>
+    <div class="bird-grid">
+      ${Object.entries(BIRDS).map(([slug, label]) => `<button class="${mine === slug ? 'sel' : ''}" onclick="setMyBird('${slug}')"><img src="/birds/${slug}.svg" alt="${label}">${label}</button>`).join('')}
+      <button class="${mine === '' ? 'sel' : ''}" onclick="setMyBird('')">${avatar(S.game.me.name, '')}No bird (initials)</button>
+    </div>
+  </div>`;
+}
+
+function setMyBird(bird) {
+  act(async () => {
+    await api('/api/avatar', { avatar: bird });
+    S.showBirdPicker = false;
+  });
 }
 
 function setView(v) {
@@ -151,10 +179,14 @@ function renderLogin() {
     <p class="sub">Pick yourself, or add yourself below.</p>
     <div class="card">
       ${S.loginPlayers.length ? `<div class="player-grid">
-        ${S.loginPlayers.map(p => `<button onclick="doLogin(${p.id})">${avatar(p.name)}${esc(p.name)}</button>`).join('')}
+        ${S.loginPlayers.map(p => `<button onclick="doLogin(${p.id})">${avatar(p.name, p.emoji)}${esc(p.name)}</button>`).join('')}
       </div><hr style="border:none;border-top:1px dashed var(--line);margin:14px 0">` : ''}
       <h3>New player</h3>
       <input type="text" id="newname" placeholder="Your name" value="${esc(val('newname'))}" onkeydown="if(event.key==='Enter')doCreate()">
+      <label class="mt">Pick your bird (optional — you can change it later)</label>
+      <div class="bird-grid">
+        ${Object.entries(BIRDS).map(([slug, label]) => `<button class="${S.newBird === slug ? 'sel' : ''}" onclick="S.newBird=S.newBird==='${slug}'?null:'${slug}';render()"><img src="/birds/${slug}.svg" alt="${label}">${label}</button>`).join('')}
+      </div>
       <button class="primary mt" style="width:100%" onclick="doCreate()">Join</button>
       <div class="err">${esc(S.err.login || '')}</div>
     </div>
@@ -190,7 +222,7 @@ async function doLogin(playerId) {
 async function doCreate() {
   try {
     const name = document.getElementById('newname').value.trim();
-    await finishLogin(await api('/api/login', { password: S.loginPassword, name }));
+    await finishLogin(await api('/api/login', { password: S.loginPassword, name, avatar: S.newBird || '' }));
   } catch (e) { S.err.login = e.message; render(); }
 }
 
@@ -254,7 +286,7 @@ function renderScoreboard() {
   return `<div class="card">
     <h2>Today${g.session ? ` · ${esc(g.session.date)}` : ''}</h2>
     ${rows.length ? `<ul class="scoreboard">
-      ${rows.map((r, i) => `<li><span class="pos">${i + 1}</span>${avatar(r.name)} ${esc(r.name)}
+      ${rows.map((r, i) => `<li><span class="pos">${i + 1}</span>${avatar(r.name, r.emoji)} ${esc(r.name)}
         <span class="pts ${r.points >= 2 ? 'two' : r.points ? 'one' : 'zero'}">${r.points}</span></li>`).join('')}
     </ul>` : '<p class="muted small">No points yet today.</p>'}
     <p class="small muted mt">Host: ${esc(g.round.hostName)}</p>
@@ -295,7 +327,7 @@ function playerChips(qq, doneFn, verb) {
     ${S.game.players.filter(p => p.id !== S.game.round.hostId).map(p => {
       const a = qq.answers.find(x => x.playerId === p.id);
       const done = a && doneFn(a);
-      return `<span class="chip ${done ? 'done' : ''}">${avatar(p.name)} ${esc(p.name)} ${done ? '<span class="tick">✓</span>' : ''}</span>`;
+      return `<span class="chip ${done ? 'done' : ''}">${avatar(p.name, p.emoji)} ${esc(p.name)} ${done ? '<span class="tick">✓</span>' : ''}</span>`;
     }).join('')}
   </div>
   <p class="small muted mt">${qq.answers.filter(doneFn).length} ${verb}</p>`;
@@ -328,7 +360,7 @@ function renderReveal(qq) {
     ${qq.answers.filter(a => a.hasGuess).length ? `<div class="guess-grid">
       ${qq.answers.filter(a => a.hasGuess).map(a => `
         <div class="guess-card ${a.guessCorrect === true ? 'right' : ''}">
-          <div class="who">${avatar(a.name)} ${esc(a.name)}</div>
+          <div class="who">${avatar(a.name, a.emoji)} ${esc(a.name)}</div>
           <div class="what">${a.guess === '' ? '<span class="muted">(passed)</span>' : esc(a.guess)}</div>
           ${isHost && a.guess !== '' ? `<div class="judge-btns">
             <button class="${a.guessCorrect ? 'on-right' : ''}" title="Mark correct" onclick="judge(${qq.id},${a.playerId},true)">✓</button>
@@ -368,7 +400,7 @@ function resultRow(a, qq, canJudge) {
     : a.guess === '' ? '<span class="muted">(passed)</span>'
     : `${esc(a.guess)} ${a.guessCorrect ? '<span class="mark-right">✓</span>' : '<span class="mark-wrong">✗</span>'}`;
   return `<tr>
-    <td>${avatar(a.name)} ${esc(a.name)} ${a.isMakeup ? '<span class="badge makeup">makeup</span>' : ''}</td>
+    <td>${avatar(a.name, a.emoji)} ${esc(a.name)} ${a.isMakeup ? '<span class="badge makeup">makeup</span>' : ''}</td>
     <td>${guessTxt}
       ${canJudge && a.guess ? `<button class="ghost small" onclick="judge(${qq.id},${a.playerId},${!a.guessCorrect})">flip</button>` : ''}</td>
     <td>${choiceTxt}</td>
@@ -385,7 +417,7 @@ function resultsTable(qq, canJudge) {
     <tr><th>Player</th><th>Written guess</th><th>Multiple choice</th><th>Points</th></tr>
     ${qq.answers.map(a => resultRow(a, qq, canJudge)).join('')}
     ${missed.map(p => `<tr>
-      <td>${avatar(p.name)} ${esc(p.name)} <span class="badge makeup">missed</span></td>
+      <td>${avatar(p.name, p.emoji)} ${esc(p.name)} <span class="badge makeup">missed</span></td>
       <td><span class="muted">—</span></td>
       <td><span class="muted">—</span></td>
       <td><span class="muted small">makeup pending</span></td>
@@ -466,7 +498,7 @@ function renderHostTools() {
         </div>
         <div class="mt">
           <label>Manage players</label>
-          ${g.players.filter(p => p.id !== g.round.hostId).map(p => `<div class="row" style="margin-bottom:6px">${avatar(p.name)}<span class="grow">${esc(p.name)}</span><button class="danger" onclick="deletePlayer(${p.id})">Delete</button></div>`).join('') || '<p class="muted small">Nobody else has joined yet.</p>'}
+          ${g.players.filter(p => p.id !== g.round.hostId).map(p => `<div class="row" style="margin-bottom:6px">${avatar(p.name, p.emoji)}<span class="grow">${esc(p.name)}</span><button class="danger" onclick="deletePlayer(${p.id})">Delete</button></div>`).join('') || '<p class="muted small">Nobody else has joined yet.</p>'}
           ${(g.deletedPlayers || []).map(p => `<div class="row" style="margin-bottom:6px"><span class="grow muted">${esc(p.name)} (deleted)</span><button onclick="restorePlayer(${p.id})">Restore</button></div>`).join('')}
           <p class="small muted">Deleting is soft: they vanish from the game and stats, but their answers are kept and restoring brings everything back.</p>
         </div>
@@ -672,7 +704,7 @@ function renderMakeup() {
       <div class="question-text">${esc(m.text)}</div>
       <div class="guess-grid" style="margin-bottom:18px">
         <div class="guess-card" style="border-color:var(--sky)"><div class="who">You</div><div class="what">${m.myGuess === '' ? '<span class="muted">(passed)</span>' : esc(m.myGuess)}</div></div>
-        ${m.others.map(o => `<div class="guess-card"><div class="who">${avatar(o.name)} ${esc(o.name)}</div><div class="what">${o.guess === '' ? '<span class="muted">(passed)</span>' : esc(o.guess)}</div></div>`).join('')}
+        ${m.others.map(o => `<div class="guess-card"><div class="who">${avatar(o.name, o.emoji)} ${esc(o.name)}</div><div class="what">${o.guess === '' ? '<span class="muted">(passed)</span>' : esc(o.guess)}</div></div>`).join('')}
       </div>
       <span class="phase-tag choosing">Now pick — stick with your guess for 2</span>
       <div class="choices">
@@ -746,7 +778,7 @@ function renderStats() {
     ${st.rows.length ? `<div style="overflow-x:auto"><table class="stats">
       <tr><th>Player</th><th>Points</th><th>Played</th><th>Guess acc.</th><th>MC acc.</th><th>2-pointers</th><th>Makeups</th></tr>
       ${st.rows.map((r, i) => `<tr>
-        <td>${avatar(r.name)} ${esc(r.name)}</td>
+        <td>${avatar(r.name, r.emoji)} ${esc(r.name)}</td>
         <td><b>${r.points}</b></td>
         <td>${r.played}</td>
         <td>${pct(r.guessRight, r.guesses)}</td>
@@ -765,7 +797,7 @@ Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
   startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice, forfeitQ,
-  setStatsRound, passGuess, removeQ, recallQ, deletePlayer, restorePlayer, playMakeup, S, render,
+  setStatsRound, passGuess, removeQ, recallQ, deletePlayer, restorePlayer, playMakeup, setMyBird, S, render,
 });
 
 if (S.token) { connectSSE(); refresh(); }
