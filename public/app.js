@@ -267,6 +267,18 @@ function renderBetweenQuestions() {
 
 function renderQuestion() {
   const qq = S.game.question;
+  if (qq.locked) {
+    return `<div class="card">
+      <span class="phase-tag results">Results</span>
+      <div class="locked-q" style="margin-top:12px">
+        You didn't get an answer in for this one, so the results are hidden.
+        <div class="row mt" style="justify-content:center">
+          <button class="primary" onclick="playMakeup(${qq.id})">Play it now</button>
+          <button onclick="forfeitQ(${qq.id})">Just show me (0 pts)</button>
+        </div>
+      </div>
+    </div>`;
+  }
   const fn = { guessing: renderGuessing, reveal: renderReveal, choosing: renderChoosing, results: renderResults }[qq.phase];
   return fn ? fn(qq) : '';
 }
@@ -603,8 +615,7 @@ function forfeitQ(id) {
   if (!confirm('Reveal this question without playing? You get 0 points and it counts as viewed.')) return;
   act(async () => {
     await api(`/api/makeup/${id}/forfeit`, {});
-    S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
-    render();
+    if (S.sessionDetail) S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
   });
 }
 

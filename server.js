@@ -185,6 +185,10 @@ function questionPayload(question, viewer, isHost) {
   const showAnswer = isHost || phase === 'results';
   const rows = q.answersFor.all(question.id);
   const mine = rows.find(r => r.player_id === viewer.id) || null;
+  // Didn't answer at all? Results stay hidden — same rule as history. Play it as a makeup instead.
+  if (phase === 'results' && !isHost && !mine) {
+    return { id: question.id, phase, locked: true };
+  }
   return {
     id: question.id,
     phase,
