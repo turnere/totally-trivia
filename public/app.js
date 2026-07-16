@@ -203,8 +203,31 @@ function renderGame() {
   const main = g.question ? renderQuestion() : renderBetweenQuestions();
   return `<div class="game-layout">
     <div>${main}${g.isHost ? renderHostTools() : ''}</div>
-    <div>${renderScoreboard()}</div>
+    <div>${renderScoreboard()}${renderMakeupsCard()}</div>
   </div>`;
+}
+
+function renderMakeupsCard() {
+  const list = S.game.makeups || [];
+  if (!list.length) return '';
+  const counts = {};
+  return `<div class="card">
+    <h2>Your makeups (${list.length})</h2>
+    <p class="small muted">Questions you missed in ${esc(S.game.round.topic)}. Their answers stay hidden until you play them.</p>
+    <ul class="scoreboard">
+      ${list.map(m => {
+        counts[m.date] = (counts[m.date] || 0) + 1;
+        return `<li>${esc(m.date)} · missed #${counts[m.date]}<span style="margin-left:auto"><button onclick="playMakeup(${m.id})">Play</button></span></li>`;
+      }).join('')}
+    </ul>
+  </div>`;
+}
+
+async function playMakeup(qid) {
+  S.makeupReturn = 'game';
+  S.view = 'history';
+  S.sessionDetail = null;
+  await startMakeup(qid);
 }
 
 function renderNoRound() {
@@ -260,16 +283,18 @@ function playerChips(qq, doneFn, verb) {
 }
 
 function renderGuessing(qq) {
-  const mine = qq.myAnswer?.guess;
+  const mine = qq.myAnswer ? qq.myAnswer.guess : null;
+  const hasMine = mine !== null && mine !== undefined;
   return `<div class="card">
     <span class="phase-tag guessing">Write your guess</span>
     <div class="question-text">${esc(qq.text)}</div>
     ${S.game.isHost ? '<p class="small muted">Read it out — you judge, you don\'t play.</p>' : `<div class="row">
       <input type="text" id="guess" class="grow" placeholder="Your guess — nobody sees it until the reveal"
         value="${esc(val('guess') || mine || '')}" onkeydown="if(event.key==='Enter')submitGuess()">
-      <button class="primary" onclick="submitGuess()">${mine ? 'Update' : 'Lock it in'}</button>
+      <button class="primary" onclick="submitGuess()">${hasMine ? 'Update' : 'Lock it in'}</button>
+      <button onclick="passGuess()" title="Skip the written guess — you can still answer the multiple choice for 1 point">Pass</button>
     </div>
-    ${mine ? `<p class="small muted mt">Your guess is in: <b>${esc(mine)}</b> — you can change it until the reveal.</p>` : ''}
+    ${hasMine ? `<p class="small muted mt">Your guess is in: <b>${mine === '' ? '(passed)' : esc(mine)}</b> — you can change it until the reveal.</p>` : ''}
     <div class="err">${esc(S.err.game || '')}</div>`}
     ${playerChips(qq, a => a.hasGuess, 'guesses in')}
     ${hostAdvance(qq, 'guessing', 'Reveal all guesses')}
@@ -285,8 +310,8 @@ function renderReveal(qq) {
       ${qq.answers.filter(a => a.hasGuess).map(a => `
         <div class="guess-card ${a.guessCorrect === true ? 'right' : ''}">
           <div class="who">${avatar(a.name)} ${esc(a.name)}</div>
-          <div class="what">${esc(a.guess)}</div>
-          ${isHost ? `<div class="judge-btns">
+          <div class="what">${a.guess === '' ? '<span class="muted">(passed)</span>' : esc(a.guess)}</div>
+          ${isHost && a.guess !== '' ? `<div class="judge-btns">
             <button class="${a.guessCorrect ? 'on-right' : ''}" title="Mark correct" onclick="judge(${qq.id},${a.playerId},true)">✓</button>
             <button class="${a.guessCorrect === false ? 'on-wrong' : ''}" title="Mark wrong" onclick="judge(${qq.id},${a.playerId},false)">✗</button>
           </div>` : ''}
@@ -303,7 +328,7 @@ function renderChoosing(qq) {
   return `<div class="card">
     <span class="phase-tag choosing">Multiple choice — stick with your guess for 2</span>
     <div class="question-text">${esc(qq.text)}</div>
-    ${myGuess ? `<p class="small muted" style="margin-bottom:10px">You guessed: <b>${esc(myGuess)}</b></p>` : ''}
+    ${myGuess != null ? `<p class="small muted" style="margin-bottom:10px">You guessed: <b>${myGuess === '' ? '(passed)' : esc(myGuess)}</b></p>` : ''}
     <div class="choices">
       ${qq.choices.map((c, i) => `
         <button class="${mine === i ? 'mine' : ''} ${S.game.isHost ? 'static' : ''} ${S.game.isHost && qq.correctIndex === i ? 'host-correct' : ''}" ${S.game.isHost ? '' : `onclick="submitChoice(${i})"`}>
@@ -321,15 +346,32 @@ function resultRow(a, qq, canJudge) {
     : a.choiceIndex === null || a.choiceIndex === undefined ? '<span class="muted">—</span>'
     : `${esc(qq.choices[a.choiceIndex])} ${a.choiceIndex === qq.correctIndex ? '<span class="mark-right">✓</span>' : '<span class="mark-wrong">✗</span>'}`;
   const guessTxt = a.guess === null || a.guess === undefined ? '<span class="muted">—</span>'
+    : a.guess === '' ? '<span class="muted">(passed)</span>'
     : `${esc(a.guess)} ${a.guessCorrect ? '<span class="mark-right">✓</span>' : '<span class="mark-wrong">✗</span>'}`;
   return `<tr>
     <td>${avatar(a.name)} ${esc(a.name)} ${a.isMakeup ? '<span class="badge makeup">makeup</span>' : ''}</td>
     <td>${guessTxt}
-      ${canJudge && a.guess != null ? `<button class="ghost small" onclick="judge(${qq.id},${a.playerId},${!a.guessCorrect})">flip</button>` : ''}</td>
+      ${canJudge && a.guess ? `<button class="ghost small" onclick="judge(${qq.id},${a.playerId},${!a.guessCorrect})">flip</button>` : ''}</td>
     <td>${choiceTxt}</td>
     <td><span class="pts ${a.points === 2 ? 'two' : a.points === 1 ? 'one' : 'zero'}">+${a.points ?? 0}</span>
       ${a.points === 2 ? '<span class="badge">stuck the landing</span>' : ''}</td>
   </tr>`;
+}
+
+// Full results table: everyone who answered, then anyone who missed it (makeup pending).
+function resultsTable(qq, canJudge) {
+  const hostId = qq.roundHostId ?? S.game.round?.hostId;
+  const missed = S.game.players.filter(p => p.id !== hostId && !qq.answers.some(a => a.playerId === p.id));
+  return `<table class="results">
+    <tr><th>Player</th><th>Written guess</th><th>Multiple choice</th><th>Points</th></tr>
+    ${qq.answers.map(a => resultRow(a, qq, canJudge)).join('')}
+    ${missed.map(p => `<tr>
+      <td>${avatar(p.name)} ${esc(p.name)} <span class="badge makeup">missed</span></td>
+      <td><span class="muted">—</span></td>
+      <td><span class="muted">—</span></td>
+      <td><span class="muted small">makeup pending</span></td>
+    </tr>`).join('')}
+  </table>`;
 }
 
 function renderResults(qq) {
@@ -337,10 +379,7 @@ function renderResults(qq) {
     <span class="phase-tag results">Results</span>
     <div class="question-text">${esc(qq.text)}</div>
     <div class="answer-banner">Answer: <b>${esc(qq.answer)}</b></div>
-    <table class="results">
-      <tr><th>Player</th><th>Written guess</th><th>Multiple choice</th><th>Points</th></tr>
-      ${qq.answers.map(a => resultRow(a, qq, S.game.isHost)).join('')}
-    </table>
+    ${resultsTable(qq, S.game.isHost)}
     ${S.game.isHost ? `<p class="small muted mt">Wrong call on a guess? Hit “flip” — points recalculate.</p>` : ''}
   </div>`;
 }
@@ -359,6 +398,7 @@ function renderHostTools() {
   const editing = S.editingDraft;
   return `<div class="card">
     <h2>Host desk</h2>
+    ${inQuestion ? `<p class="small muted" style="margin-bottom:10px">Botched question? <button class="danger" onclick="removeQ(${g.question.id})">Scrap it (won't count)</button></p>` : ''}
     ${drafts.length ? `<h3>Question queue</h3>
       ${drafts.map(d => `<div class="draft-item">
         <div class="q">${esc(d.text)}<div class="a">→ ${esc(d.answer)}</div></div>
@@ -399,6 +439,12 @@ function renderHostTools() {
           </div>
         </div>
         <div class="mt">
+          <label>Manage players</label>
+          ${g.players.filter(p => p.id !== g.round.hostId).map(p => `<div class="row" style="margin-bottom:6px">${avatar(p.name)}<span class="grow">${esc(p.name)}</span><button class="danger" onclick="deletePlayer(${p.id})">Delete</button></div>`).join('') || '<p class="muted small">Nobody else has joined yet.</p>'}
+          ${(g.deletedPlayers || []).map(p => `<div class="row" style="margin-bottom:6px"><span class="grow muted">${esc(p.name)} (deleted)</span><button onclick="restorePlayer(${p.id})">Restore</button></div>`).join('')}
+          <p class="small muted">Deleting is soft: they vanish from the game and stats, but their answers are kept and restoring brings everything back.</p>
+        </div>
+        <div class="mt">
           <label>Or wrap this round and start a fresh topic</label>
           <input type="text" id="newtopic" placeholder="New topic (e.g. 90s Movies)" value="${esc(val('newtopic'))}">
           <div class="row mt">
@@ -426,6 +472,20 @@ function submitGuess() {
   if (!g) return;
   act(async () => { await api('/api/guess', { guess: g }); clearVal('guess'); });
 }
+function passGuess() { act(async () => { await api('/api/guess', { guess: '' }); clearVal('guess'); }); }
+function removeQ(id) {
+  if (!confirm("Remove this question? It stops counting for everyone (soft delete — the data stays in the database).")) return;
+  act(async () => {
+    await api(`/api/host/question/${id}/remove`, {});
+    if (S.sessionDetail) S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
+  }, 'host');
+}
+function deletePlayer(id) {
+  const p = S.game.players.find(x => x.id === id);
+  if (!confirm(`Delete ${p ? p.name : 'this player'}? They disappear from the game and stats. Soft delete — restoring brings everything back.`)) return;
+  act(() => api(`/api/host/player/${id}/delete`, {}), 'round');
+}
+function restorePlayer(id) { act(() => api(`/api/host/player/${id}/restore`, {}), 'round'); }
 function submitChoice(i) { act(() => api('/api/choice', { choice: i })); }
 function advance(id) { act(() => api(`/api/host/question/${id}/advance`, {}), 'host'); }
 function judge(qid, pid, correct) { act(() => api('/api/host/judge', { questionId: qid, playerId: pid, correct }), 'host'); }
@@ -525,7 +585,7 @@ function renderSessionDetail() {
       <div class="locked-q">
         <b>Question ${qq.index}</b> — hidden because you haven't played it yet
         <div class="row mt" style="justify-content:center">
-          ${qq.canMakeup ? `<button class="primary" onclick="startMakeup(${qq.id})">Play it now</button>
+          ${qq.canMakeup ? `<button class="primary" onclick="S.makeupReturn='history';startMakeup(${qq.id})">Play it now</button>
           <button onclick="forfeitQ(${qq.id})">Just show me (0 pts)</button>` : '<span class="muted small">still in play</span>'}
         </div>
       </div>` : `
@@ -533,10 +593,8 @@ function renderSessionDetail() {
         <div class="qnum">Question ${qq.index}</div>
         <div class="question-text" style="font-size:1.15rem">${esc(qq.text)}</div>
         <div class="answer-banner" style="font-size:1rem">Answer: <b>${esc(qq.answer)}</b></div>
-        <table class="results">
-          <tr><th>Player</th><th>Written guess</th><th>Multiple choice</th><th>Points</th></tr>
-          ${qq.answers.map(a => resultRow(a, qq, qq.canJudge)).join('')}
-        </table>
+        ${resultsTable(qq, qq.canJudge)}
+        ${qq.canJudge ? `<div class="mt"><button class="danger" onclick="removeQ(${qq.id})">Remove question (stops counting)</button></div>` : ''}
       </div>`).join('') : '<div class="empty">No questions were asked this day.</div>'}
   </div>`;
 }
@@ -559,7 +617,8 @@ async function startMakeup(qid) {
 
 function renderMakeup() {
   const m = S.makeup.data;
-  const back = `<div class="row" style="margin-bottom:16px"><button onclick="exitMakeup()">← Back to ${esc(S.sessionDetail?.date || 'history')}</button></div>`;
+  const backLabel = S.makeupReturn === 'game' ? 'the game' : (S.sessionDetail?.date || 'history');
+  const back = `<div class="row" style="margin-bottom:16px"><button onclick="exitMakeup()">← Back to ${esc(backLabel)}</button></div>`;
 
   if (m.stage === 'guess') {
     return `${back}<div class="card">
@@ -569,6 +628,7 @@ function renderMakeup() {
         <input type="text" id="mguess" class="grow" placeholder="No peeking — guess like everyone else did" value="${esc(val('mguess'))}"
           onkeydown="if(event.key==='Enter')makeupGuess()">
         <button class="primary" onclick="makeupGuess()">Lock it in</button>
+        <button onclick="makeupGuess(true)" title="Skip the written guess — you can still answer the multiple choice for 1 point">Pass</button>
       </div>
       <div class="err">${esc(S.err.makeup || '')}</div>
     </div>`;
@@ -578,8 +638,8 @@ function renderMakeup() {
       <span class="phase-tag reveal">Here's what everyone guessed</span>
       <div class="question-text">${esc(m.text)}</div>
       <div class="guess-grid" style="margin-bottom:18px">
-        <div class="guess-card" style="border-color:var(--sky)"><div class="who">You</div><div class="what">${esc(m.myGuess)}</div></div>
-        ${m.others.map(o => `<div class="guess-card"><div class="who">${avatar(o.name)} ${esc(o.name)}</div><div class="what">${esc(o.guess)}</div></div>`).join('')}
+        <div class="guess-card" style="border-color:var(--sky)"><div class="who">You</div><div class="what">${m.myGuess === '' ? '<span class="muted">(passed)</span>' : esc(m.myGuess)}</div></div>
+        ${m.others.map(o => `<div class="guess-card"><div class="who">${avatar(o.name)} ${esc(o.name)}</div><div class="what">${o.guess === '' ? '<span class="muted">(passed)</span>' : esc(o.guess)}</div></div>`).join('')}
       </div>
       <span class="phase-tag choosing">Now pick — stick with your guess for 2</span>
       <div class="choices">
@@ -594,23 +654,27 @@ function renderMakeup() {
     <span class="phase-tag results">Results</span>
     <div class="question-text">${esc(qq.text)}</div>
     <div class="answer-banner">Answer: <b>${esc(qq.answer)}</b></div>
-    <table class="results">
-      <tr><th>Player</th><th>Written guess</th><th>Multiple choice</th><th>Points</th></tr>
-      ${qq.answers.map(a => resultRow(a, qq, false)).join('')}
-    </table>
+    ${resultsTable(qq, false)}
     <p class="small muted mt">Your written guess was auto-judged — the host can fix it if it was robbed.</p>
   </div>`;
 }
 
 async function exitMakeup() {
   S.makeup = null;
+  if (S.makeupReturn === 'game') {
+    S.makeupReturn = null;
+    S.view = 'game';
+    await refresh();
+    return;
+  }
   if (S.sessionDetail) S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
+  else if (!S.history) { await loadHistory(); return; }
   render();
 }
 
-function makeupGuess() {
-  const g = document.getElementById('mguess').value.trim();
-  if (!g) return;
+function makeupGuess(pass) {
+  const g = pass ? '' : document.getElementById('mguess').value.trim();
+  if (!pass && !g) return;
   act(async () => {
     await api(`/api/makeup/${S.makeup.id}/guess`, { guess: g });
     clearVal('mguess');
@@ -668,7 +732,7 @@ Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
   startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice, forfeitQ,
-  setStatsRound, S, render,
+  setStatsRound, passGuess, removeQ, deletePlayer, restorePlayer, playMakeup, S, render,
 });
 
 if (S.token) { connectSSE(); refresh(); }

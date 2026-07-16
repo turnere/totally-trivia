@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS answers (
 );
 `);
 
+// Migrations for columns added after first release (no-ops once applied).
+for (const stmt of [
+  'ALTER TABLE players ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE questions ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0',
+]) {
+  try { db.exec(stmt); } catch { /* column already exists */ }
+}
+
 // ---------- helpers ----------
 
 function todayStr() {
@@ -126,18 +134,19 @@ function computePoints(row, question) {
 }
 
 const q = {
-  playerByToken: db.prepare('SELECT p.* FROM tokens t JOIN players p ON p.id = t.player_id WHERE t.token = ?'),
-  allPlayers: db.prepare('SELECT id, name, emoji FROM players ORDER BY name'),
+  playerByToken: db.prepare('SELECT p.* FROM tokens t JOIN players p ON p.id = t.player_id WHERE t.token = ? AND p.deleted = 0'),
+  allPlayers: db.prepare('SELECT id, name, emoji FROM players WHERE deleted = 0 ORDER BY name'),
+  deletedPlayers: db.prepare('SELECT id, name FROM players WHERE deleted = 1 ORDER BY name'),
   activeRound: db.prepare(`SELECT r.*, p.name AS host_name, p.emoji AS host_emoji
                            FROM rounds r JOIN players p ON p.id = r.host_id
                            WHERE r.status = 'active' ORDER BY r.id DESC LIMIT 1`),
   openSession: db.prepare(`SELECT * FROM sessions WHERE round_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`),
-  currentQuestion: db.prepare(`SELECT * FROM questions WHERE session_id = ? AND phase IN ('guessing','reveal','choosing','results') ORDER BY id LIMIT 1`),
+  currentQuestion: db.prepare(`SELECT * FROM questions WHERE session_id = ? AND deleted = 0 AND phase IN ('guessing','reveal','choosing','results') ORDER BY id LIMIT 1`),
   drafts: db.prepare(`SELECT * FROM questions WHERE round_id = ? AND phase = 'draft' ORDER BY id`),
   question: db.prepare('SELECT * FROM questions WHERE id = ?'),
-  answersFor: db.prepare(`SELECT a.*, p.name, p.emoji FROM answers a JOIN players p ON p.id = a.player_id WHERE a.question_id = ? ORDER BY p.name`),
+  answersFor: db.prepare(`SELECT a.*, p.name, p.emoji FROM answers a JOIN players p ON p.id = a.player_id WHERE a.question_id = ? AND p.deleted = 0 ORDER BY p.name`),
   myAnswer: db.prepare('SELECT * FROM answers WHERE question_id = ? AND player_id = ?'),
-  sessionQuestions: db.prepare(`SELECT * FROM questions WHERE session_id = ? ORDER BY asked_at, id`),
+  sessionQuestions: db.prepare(`SELECT * FROM questions WHERE session_id = ? AND deleted = 0 ORDER BY asked_at, id`),
   session: db.prepare(`SELECT s.*, r.topic, r.host_id AS round_host_id FROM sessions s JOIN rounds r ON r.id = s.round_id WHERE s.id = ?`),
 };
 
@@ -157,6 +166,17 @@ setInterval(() => {
 }, 25000);
 
 // ---------- state assembly ----------
+
+// Finished questions in this round the viewer hasn't completed — their makeup queue.
+// Hosts don't play, so they have no makeups.
+function pendingMakeups(round, viewer) {
+  if (!round || round.host_id === viewer.id) return [];
+  return db.prepare(`
+    SELECT qq.id, s.date FROM questions qq JOIN sessions s ON s.id = qq.session_id
+    WHERE qq.round_id = ? AND qq.deleted = 0 AND qq.phase IN ('results','closed')
+      AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id = qq.id AND a.player_id = ? AND a.finalized = 1)
+    ORDER BY qq.asked_at, qq.id`).all(round.id, viewer.id);
+}
 
 function questionPayload(question, viewer, isHost) {
   const phase = question.phase;
@@ -227,6 +247,8 @@ function buildState(viewer) {
     question,
     drafts,
     todayScores,
+    makeups: round ? pendingMakeups(round, viewer).map(m => ({ id: m.id, date: m.date })) : [],
+    deletedPlayers: isHost ? q.deletedPlayers.all() : undefined,
   };
 }
 
@@ -240,6 +262,7 @@ function questionDetail(question, canJudge) {
     choices,
     correctIndex: question.correct_index,
     canJudge: !!canJudge,
+    roundHostId: (db.prepare('SELECT host_id FROM rounds WHERE id = ?').get(question.round_id) || {}).host_id,
     answers: q.answersFor.all(question.id).map(r => ({
       playerId: r.player_id,
       name: r.name,
@@ -356,7 +379,7 @@ route('POST', /^\/api\/login$/, async (req, res) => {
   if (body.password !== PASSWORD) return fail(res, 401, 'Wrong password');
   let player;
   if (body.playerId) {
-    player = db.prepare('SELECT * FROM players WHERE id = ?').get(body.playerId);
+    player = db.prepare('SELECT * FROM players WHERE id = ? AND deleted = 0').get(body.playerId);
     if (!player) return fail(res, 404, 'No such player');
   } else {
     const name = String(body.name || '').trim();
@@ -398,8 +421,8 @@ route('POST', /^\/api\/guess$/, async (req, res, player) => {
   const s = round && q.openSession.get(round.id);
   const cur = s && q.currentQuestion.get(s.id);
   if (!cur || cur.phase !== 'guessing') return fail(res, 409, 'Not accepting guesses right now');
+  // Empty string = an explicit pass; still counts as participating (capped at 1 pt).
   const guess = String(body.guess || '').trim().slice(0, 200);
-  if (!guess) return fail(res, 400, 'Empty guess');
   db.prepare(`INSERT INTO answers (question_id, player_id, guess) VALUES (?, ?, ?)
               ON CONFLICT(question_id, player_id) DO UPDATE SET guess = excluded.guess`)
     .run(cur.id, player.id, guess);
@@ -431,7 +454,7 @@ route('POST', /^\/api\/host\/round$/, async (req, res, player) => {
   const topic = String(body.topic || '').trim();
   if (!topic) return fail(res, 400, 'Topic required');
   const hostId = Number(body.hostId || player.id);
-  if (!db.prepare('SELECT id FROM players WHERE id = ?').get(hostId)) return fail(res, 404, 'No such player');
+  if (!db.prepare('SELECT id FROM players WHERE id = ? AND deleted = 0').get(hostId)) return fail(res, 404, 'No such player');
   const current = q.activeRound.get();
   if (current) {
     if (current.host_id !== player.id) return fail(res, 403, 'Only the current host can start a new round');
@@ -448,7 +471,7 @@ route('POST', /^\/api\/host\/transfer$/, async (req, res, player) => {
   const body = await readBody(req);
   const round = q.activeRound.get();
   if (!round || round.host_id !== player.id) return fail(res, 403, 'Only the host can transfer hosting');
-  if (!db.prepare('SELECT id FROM players WHERE id = ?').get(Number(body.playerId))) return fail(res, 404, 'No such player');
+  if (!db.prepare('SELECT id FROM players WHERE id = ? AND deleted = 0').get(Number(body.playerId))) return fail(res, 404, 'No such player');
   db.prepare('UPDATE rounds SET host_id = ? WHERE id = ?').run(Number(body.playerId), round.id);
   broadcast();
   json(res, 200, { ok: true });
@@ -548,6 +571,39 @@ route('POST', /^\/api\/host\/question\/(\d+)\/advance$/, async (req, res, player
   json(res, 200, { ok: true });
 });
 
+// Soft-delete an asked question: it stops counting anywhere but the rows stay in the db.
+route('POST', /^\/api\/host\/question\/(\d+)\/remove$/, async (req, res, player, m) => {
+  const question = q.question.get(Number(m[1]));
+  if (!question || question.phase === 'draft' || question.deleted) return fail(res, 404, 'No such asked question');
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(question.round_id);
+  if (round.host_id !== player.id) return fail(res, 403, "Only that round's host can remove questions");
+  db.prepare(`UPDATE questions SET deleted = 1, phase = 'closed' WHERE id = ?`).run(question.id);
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
+// Soft-delete / restore players (e.g. test accounts). Answers stay; stats ignore them.
+route('POST', /^\/api\/host\/player\/(\d+)\/delete$/, async (req, res, player, m) => {
+  const round = requireHost(res, player);
+  if (!round) return;
+  const target = Number(m[1]);
+  if (target === round.host_id) return fail(res, 409, "Can't delete the current host");
+  if (!db.prepare('SELECT id FROM players WHERE id = ? AND deleted = 0').get(target)) return fail(res, 404, 'No such player');
+  db.prepare('UPDATE players SET deleted = 1 WHERE id = ?').run(target);
+  db.prepare('DELETE FROM tokens WHERE player_id = ?').run(target);
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
+route('POST', /^\/api\/host\/player\/(\d+)\/restore$/, async (req, res, player, m) => {
+  const round = requireHost(res, player);
+  if (!round) return;
+  if (!db.prepare('SELECT id FROM players WHERE id = ? AND deleted = 1').get(Number(m[1]))) return fail(res, 404, 'No such deleted player');
+  db.prepare('UPDATE players SET deleted = 0 WHERE id = ?').run(Number(m[1]));
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
 route('POST', /^\/api\/host\/judge$/, async (req, res, player) => {
   const body = await readBody(req);
   const question = q.question.get(Number(body.questionId));
@@ -555,7 +611,7 @@ route('POST', /^\/api\/host\/judge$/, async (req, res, player) => {
   const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(question.round_id);
   if (round.host_id !== player.id) return fail(res, 403, 'Only that round\'s host can judge');
   const row = q.myAnswer.get(question.id, Number(body.playerId));
-  if (!row || row.guess === null) return fail(res, 404, 'No guess to judge');
+  if (!row || !row.guess) return fail(res, 404, 'No guess to judge');
   const correct = body.correct ? 1 : 0;
   db.prepare('UPDATE answers SET guess_correct = ? WHERE question_id = ? AND player_id = ?')
     .run(correct, question.id, row.player_id);
@@ -593,7 +649,7 @@ route('GET', /^\/api\/history$/, (req, res) => {
       hostEmoji: r.host_emoji,
       status: r.status,
       sessions: db.prepare(`SELECT s.id, s.date, s.status,
-                              (SELECT COUNT(*) FROM questions qq WHERE qq.session_id = s.id AND qq.phase != 'draft') AS question_count
+                              (SELECT COUNT(*) FROM questions qq WHERE qq.session_id = s.id AND qq.phase != 'draft' AND qq.deleted = 0) AS question_count
                             FROM sessions s WHERE s.round_id = ? ORDER BY s.date DESC, s.id DESC`).all(r.id)
         .map(s => ({ id: s.id, date: s.date, status: s.status, questionCount: s.question_count })),
     })),
@@ -655,7 +711,6 @@ route('POST', /^\/api\/makeup\/(\d+)\/guess$/, async (req, res, player, m) => {
   if (q.myAnswer.get(question.id, player.id)) return fail(res, 409, 'Already started');
   const body = await readBody(req);
   const guess = String(body.guess || '').trim().slice(0, 200);
-  if (!guess) return fail(res, 400, 'Empty guess');
   db.prepare('INSERT INTO answers (question_id, player_id, guess, guess_correct, is_makeup) VALUES (?, ?, ?, ?, 1)')
     .run(question.id, player.id, guess, autoJudge(guess, question));
   json(res, 200, { ok: true });
@@ -700,7 +755,7 @@ route('GET', /^\/api\/stats$/, (req, res) => {
   let rows = db.prepare(`
     SELECT a.*, qq.correct_index, qq.round_id FROM answers a
     JOIN questions qq ON qq.id = a.question_id
-    WHERE a.finalized = 1`).all();
+    WHERE a.finalized = 1 AND qq.deleted = 0`).all();
   if (roundId && roundId !== 'all') rows = rows.filter(r => r.round_id === Number(roundId));
   const byPlayer = new Map();
   for (const p of q.allPlayers.all()) {
