@@ -200,9 +200,14 @@ function renderGame() {
   const g = S.game;
   if (!g.round) return renderNoRound();
 
-  const main = g.question ? renderQuestion() : renderBetweenQuestions();
+  // A question in results is over: lead with "what's next", recap the results below.
+  const qq = g.question;
+  const inResults = qq && qq.phase === 'results';
+  const live = qq && !inResults ? renderQuestion() : '';
+  const between = !qq || inResults ? renderBetweenQuestions() : '';
+  const recent = inResults ? (qq.locked ? renderLockedResults(qq, true) : renderResults(qq, true)) : '';
   return `<div class="game-layout">
-    <div>${main}${g.isHost ? renderHostTools() : ''}</div>
+    <div>${live}${between}${g.isHost ? renderHostTools() : ''}${recent}</div>
     <div>${renderScoreboard()}${renderMakeupsCard()}</div>
   </div>`;
 }
@@ -267,20 +272,22 @@ function renderBetweenQuestions() {
 
 function renderQuestion() {
   const qq = S.game.question;
-  if (qq.locked) {
-    return `<div class="card">
-      <span class="phase-tag results">Results</span>
-      <div class="locked-q" style="margin-top:12px">
-        You didn't get an answer in for this one, so the results are hidden.
-        <div class="row mt" style="justify-content:center">
-          <button class="primary" onclick="playMakeup(${qq.id})">Play it now</button>
-          <button onclick="forfeitQ(${qq.id})">Just show me (0 pts)</button>
-        </div>
-      </div>
-    </div>`;
-  }
+  if (qq.locked) return renderLockedResults(qq, false);
   const fn = { guessing: renderGuessing, reveal: renderReveal, choosing: renderChoosing, results: renderResults }[qq.phase];
   return fn ? fn(qq) : '';
+}
+
+function renderLockedResults(qq, recent) {
+  return `<div class="card">
+    <span class="phase-tag results">${recent ? 'Last question' : 'Results'}</span>
+    <div class="locked-q" style="margin-top:12px">
+      You didn't get an answer in for this one, so the results are hidden.
+      <div class="row mt" style="justify-content:center">
+        <button class="primary" onclick="playMakeup(${qq.id})">Play it now</button>
+        <button onclick="forfeitQ(${qq.id})">Just show me (0 pts)</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function playerChips(qq, doneFn, verb) {
@@ -386,9 +393,9 @@ function resultsTable(qq, canJudge) {
   </table>`;
 }
 
-function renderResults(qq) {
+function renderResults(qq, recent) {
   return `<div class="card">
-    <span class="phase-tag results">Results</span>
+    <span class="phase-tag results">${recent ? 'Last question' : 'Results'}</span>
     <div class="question-text">${esc(qq.text)}</div>
     <div class="answer-banner">Answer: <b>${esc(qq.answer)}</b></div>
     ${resultsTable(qq, S.game.isHost)}
