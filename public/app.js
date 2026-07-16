@@ -17,7 +17,7 @@ const S = {
   err: {},                   // keyed error messages
 };
 
-const AV_COLORS = ['#2f7d5d', '#3c6fb8', '#c9931a', '#b3593d', '#6b5aa8', '#2b7d84', '#a84f6f', '#5a7d2f'];
+const AV_COLORS = ['#3574e3', '#ff5050', '#3d4fd7', '#a8850b', '#1b24a2', '#797575', '#050039', '#444444'];
 function avatar(name) {
   let h = 0;
   for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;

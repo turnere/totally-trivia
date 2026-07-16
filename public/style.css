@@ -1,20 +1,21 @@
+/* Brand palette: 444444 / 797575 / FFBAB9 / FF5050 / FFCC01 / 3574E3 / 3D4FD7 / 1B24A2 / 050039 */
 :root {
-  --bg: #f6f3ec;
+  --bg: #ffffff;
   --card: #ffffff;
-  --ink: #2b2b33;
-  --muted: #7a7a85;
-  --line: #e6e1d5;
-  --accent: #2f7d5d;
+  --ink: #444444;
+  --muted: #797575;
+  --line: #e6e6e6;
+  --accent: #3574e3;
   --accent-ink: #ffffff;
-  --accent-soft: #e3f0ea;
-  --gold: #c9931a;
-  --gold-soft: #fdf3da;
-  --bad: #c0453e;
-  --bad-soft: #fbe9e7;
-  --sky: #3c6fb8;
-  --sky-soft: #e8eff9;
+  --accent-soft: #e9f0fc;
+  --gold: #a8850b;      /* readable text-weight take on #ffcc01 */
+  --gold-soft: #fff2bf;
+  --bad: #ff5050;
+  --bad-soft: #ffbab9;
+  --sky: #3d4fd7;
+  --sky-soft: #e9ebfa;
   --radius: 14px;
-  --shadow: 0 1px 3px rgba(40, 35, 20, 0.08), 0 4px 14px rgba(40, 35, 20, 0.06);
+  --shadow: 0 1px 3px rgba(5, 0, 57, 0.07), 0 4px 14px rgba(5, 0, 57, 0.05);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -42,7 +43,7 @@ button {
 button:hover { box-shadow: var(--shadow); }
 button:active { transform: scale(0.98); }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
-button.primary:hover { background: #276b4f; }
+button.primary:hover { background: #2b62c9; }
 button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 button.ghost:hover { color: var(--ink); box-shadow: none; }
 button.danger { color: var(--bad); border-color: var(--bad-soft); }
@@ -171,7 +172,7 @@ nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent
 }
 .choices button .letter {
   flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px;
-  background: var(--bg); display: inline-flex; align-items: center; justify-content: center;
+  background: #f1f1f1; display: inline-flex; align-items: center; justify-content: center;
   font-weight: 800; font-size: 0.9rem;
 }
 .choices button.mine { border-color: var(--sky); background: var(--sky-soft); }
