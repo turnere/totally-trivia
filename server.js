@@ -394,6 +394,7 @@ route('GET', /^\/api\/events$/, (req, res) => {
 route('POST', /^\/api\/guess$/, async (req, res, player) => {
   const body = await readBody(req);
   const round = q.activeRound.get();
+  if (round && round.host_id === player.id) return fail(res, 403, "The host doesn't play — they judge");
   const s = round && q.openSession.get(round.id);
   const cur = s && q.currentQuestion.get(s.id);
   if (!cur || cur.phase !== 'guessing') return fail(res, 409, 'Not accepting guesses right now');
@@ -409,6 +410,7 @@ route('POST', /^\/api\/guess$/, async (req, res, player) => {
 route('POST', /^\/api\/choice$/, async (req, res, player) => {
   const body = await readBody(req);
   const round = q.activeRound.get();
+  if (round && round.host_id === player.id) return fail(res, 403, "The host doesn't play — they judge");
   const s = round && q.openSession.get(round.id);
   const cur = s && q.currentQuestion.get(s.id);
   if (!cur || cur.phase !== 'choosing') return fail(res, 409, 'Not accepting picks right now');

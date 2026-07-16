@@ -178,6 +178,7 @@ nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent
 .choices button.correct { border-color: var(--accent); background: var(--accent-soft); }
 .choices button.correct .letter { background: var(--accent); color: #fff; }
 .choices button.host-correct { border-style: dashed; border-color: var(--accent); }
+.choices button.static { pointer-events: none; }
 
 .answer-banner {
   background: var(--accent-soft); border: 1.5px solid var(--accent);

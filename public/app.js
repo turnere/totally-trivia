@@ -250,7 +250,7 @@ function renderQuestion() {
 
 function playerChips(qq, doneFn, verb) {
   return `<div class="waiting-list">
-    ${S.game.players.map(p => {
+    ${S.game.players.filter(p => p.id !== S.game.round.hostId).map(p => {
       const a = qq.answers.find(x => x.playerId === p.id);
       const done = a && doneFn(a);
       return `<span class="chip ${done ? 'done' : ''}">${avatar(p.name)} ${esc(p.name)} ${done ? '<span class="tick">✓</span>' : ''}</span>`;
@@ -264,13 +264,13 @@ function renderGuessing(qq) {
   return `<div class="card">
     <span class="phase-tag guessing">Write your guess</span>
     <div class="question-text">${esc(qq.text)}</div>
-    <div class="row">
+    ${S.game.isHost ? '<p class="small muted">Read it out — you judge, you don\'t play.</p>' : `<div class="row">
       <input type="text" id="guess" class="grow" placeholder="Your guess — nobody sees it until the reveal"
         value="${esc(val('guess') || mine || '')}" onkeydown="if(event.key==='Enter')submitGuess()">
       <button class="primary" onclick="submitGuess()">${mine ? 'Update' : 'Lock it in'}</button>
     </div>
     ${mine ? `<p class="small muted mt">Your guess is in: <b>${esc(mine)}</b> — you can change it until the reveal.</p>` : ''}
-    <div class="err">${esc(S.err.game || '')}</div>
+    <div class="err">${esc(S.err.game || '')}</div>`}
     ${playerChips(qq, a => a.hasGuess, 'guesses in')}
     ${hostAdvance(qq, 'guessing', 'Reveal all guesses')}
   </div>`;
@@ -306,7 +306,7 @@ function renderChoosing(qq) {
     ${myGuess ? `<p class="small muted" style="margin-bottom:10px">You guessed: <b>${esc(myGuess)}</b></p>` : ''}
     <div class="choices">
       ${qq.choices.map((c, i) => `
-        <button class="${mine === i ? 'mine' : ''} ${S.game.isHost && qq.correctIndex === i ? 'host-correct' : ''}" onclick="submitChoice(${i})">
+        <button class="${mine === i ? 'mine' : ''} ${S.game.isHost ? 'static' : ''} ${S.game.isHost && qq.correctIndex === i ? 'host-correct' : ''}" ${S.game.isHost ? '' : `onclick="submitChoice(${i})"`}>
           <span class="letter">${'ABCD'[i] || i + 1}</span> ${esc(c)}
         </button>`).join('')}
     </div>
