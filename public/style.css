@@ -46,6 +46,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { background: #2b62c9; }
 button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 button.ghost:hover { color: var(--ink); box-shadow: none; }
+button.ghost.danger { color: var(--bad); }
+button.ghost.danger:hover { color: #d63a3a; }
 button.danger { color: var(--bad); border-color: var(--bad-soft); }
 button:disabled { opacity: 0.5; cursor: default; pointer-events: none; }
 button.big { padding: 12px 24px; font-size: 1.05rem; }

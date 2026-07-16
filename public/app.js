@@ -392,13 +392,20 @@ function renderResults(qq) {
     <div class="question-text">${esc(qq.text)}</div>
     <div class="answer-banner">Answer: <b>${esc(qq.answer)}</b></div>
     ${resultsTable(qq, S.game.isHost)}
-    ${S.game.isHost ? `<p class="small muted mt">Wrong call on a guess? Hit “flip” — points recalculate.</p>` : ''}
+    ${S.game.isHost ? `<div class="mt row">
+      <span class="small muted grow">Wrong call on a guess? Hit “flip” — points recalculate.</span>
+      <button class="ghost danger" onclick="removeQ(${qq.id})" title="Botched question? Scrap it — it won't count for anyone">Scrap this question</button>
+    </div>` : ''}
   </div>`;
 }
 
 function hostAdvance(qq, phase, label) {
   if (!S.game.isHost) return '';
-  return `<div class="mt"><button class="primary big" onclick="advance(${qq.id})">${label}</button></div>`;
+  return `<div class="mt row">
+    <button class="primary big" onclick="advance(${qq.id})">${label}</button>
+    <span class="grow"></span>
+    <button class="ghost danger" onclick="removeQ(${qq.id})" title="Botched question? Scrap it — it won't count for anyone">Scrap this question</button>
+  </div>`;
 }
 
 // ---------- host tools ----------
@@ -410,7 +417,6 @@ function renderHostTools() {
   const editing = S.editingDraft;
   return `<div class="card">
     <h2>Host desk</h2>
-    ${inQuestion ? `<p class="small muted" style="margin-bottom:10px">Botched question? <button class="danger" onclick="removeQ(${g.question.id})">Scrap it (won't count)</button></p>` : ''}
     ${drafts.length ? `<h3>Question queue</h3>
       ${drafts.map(d => `<div class="draft-item">
         <div class="q">${esc(d.text)}<div class="a">→ ${esc(d.answer)}</div></div>
