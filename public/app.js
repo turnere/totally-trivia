@@ -373,7 +373,7 @@ function resultRow(a, qq, canJudge) {
       ${canJudge && a.guess ? `<button class="ghost small" onclick="judge(${qq.id},${a.playerId},${!a.guessCorrect})">flip</button>` : ''}</td>
     <td>${choiceTxt}</td>
     <td><span class="pts ${a.points === 2 ? 'two' : a.points === 1 ? 'one' : 'zero'}">+${a.points ?? 0}</span>
-      ${a.points === 2 ? '<span class="badge">stuck the landing</span>' : ''}</td>
+      ${a.points > 0 ? '<img src="/parrot.gif" class="parrot" alt="party parrot">'.repeat(a.points) : ''}</td>
   </tr>`;
 }
 
@@ -411,6 +411,7 @@ function hostAdvance(qq, phase, label) {
   return `<div class="mt row">
     <button class="primary big" onclick="advance(${qq.id})">${label}</button>
     <span class="grow"></span>
+    <button class="ghost" onclick="recallQ(${qq.id})" title="Pull it back into the queue to fix the wording or choices — guesses so far are discarded">Claw back &amp; edit</button>
     <button class="ghost danger" onclick="removeQ(${qq.id})" title="Botched question? Scrap it — it won't count for anyone">Scrap this question</button>
   </div>`;
 }
@@ -498,6 +499,14 @@ function submitGuess() {
   act(async () => { await api('/api/guess', { guess: g }); clearVal('guess'); });
 }
 function passGuess() { act(async () => { await api('/api/guess', { guess: '' }); clearVal('guess'); }); }
+function recallQ(id) {
+  if (!confirm('Pull this question back into the queue for editing? Any guesses submitted so far are discarded.')) return;
+  act(async () => {
+    await api(`/api/host/question/${id}/recall`, {});
+    S.game = await api('/api/state');
+    editDraft(id);
+  }, 'host');
+}
 function removeQ(id) {
   if (!confirm("Remove this question? It stops counting for everyone (soft delete — the data stays in the database).")) return;
   act(async () => {
@@ -756,7 +765,7 @@ Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
   startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice, forfeitQ,
-  setStatsRound, passGuess, removeQ, deletePlayer, restorePlayer, playMakeup, S, render,
+  setStatsRound, passGuess, removeQ, recallQ, deletePlayer, restorePlayer, playMakeup, S, render,
 });
 
 if (S.token) { connectSSE(); refresh(); }

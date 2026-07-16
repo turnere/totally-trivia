@@ -575,6 +575,21 @@ route('POST', /^\/api\/host\/question\/(\d+)\/advance$/, async (req, res, player
   json(res, 200, { ok: true });
 });
 
+// Claw back an in-progress question to the draft queue for editing.
+// Guesses submitted so far are discarded — it's a full redo when re-asked.
+route('POST', /^\/api\/host\/question\/(\d+)\/recall$/, async (req, res, player, m) => {
+  const round = requireHost(res, player);
+  if (!round) return;
+  const question = q.question.get(Number(m[1]));
+  if (!question || question.round_id !== round.id || !['guessing', 'reveal', 'choosing'].includes(question.phase)) {
+    return fail(res, 409, 'Can only claw back a question that is in progress');
+  }
+  db.prepare('DELETE FROM answers WHERE question_id = ?').run(question.id);
+  db.prepare(`UPDATE questions SET phase = 'draft', session_id = NULL, asked_at = NULL WHERE id = ?`).run(question.id);
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
 // Soft-delete an asked question: it stops counting anywhere but the rows stay in the db.
 route('POST', /^\/api\/host\/question\/(\d+)\/remove$/, async (req, res, player, m) => {
   const question = q.question.get(Number(m[1]));
@@ -789,6 +804,7 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.gif': 'image/gif',
   '.ico': 'image/x-icon',
 };
 
