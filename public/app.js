@@ -473,10 +473,27 @@ function renderScoreboard() {
 function renderBetweenQuestions() {
   const g = S.game;
   if (g.isHost) return ''; // host sees their tools below
+  const queued = typeof g.drafts?.count === 'number' ? g.drafts.count : 0;
   return `<div class="card empty">
     Waiting for ${esc(g.round.hostName)} to launch the next question…
-    ${typeof g.drafts?.count === 'number' && g.drafts.count > 0 ? `<p class="small mt">${g.drafts.count} question${g.drafts.count > 1 ? 's' : ''} in the queue</p>` : ''}
+    ${queued > 0 ? `<p class="small mt">${queued} question${queued > 1 ? 's' : ''} in the queue</p>
+    <p class="mt"><button onclick="deputyStart()">Host away? Start the next question</button></p>` : ''}
   </div>`;
+}
+
+function deputyBar(fromPhase, label) {
+  if (S.game.isHost) return '';
+  return `<div class="mt" style="text-align:right"><button class="ghost" onclick="deputyAdv('${fromPhase}')">Host away? ${label}</button></div>`;
+}
+
+function deputyStart() {
+  if (!confirm('Start the next question without the host? Guesses get auto-judged; the host can fix close calls later from History.')) return;
+  act(() => api('/api/deputy/start', {}));
+}
+
+function deputyAdv(fromPhase) {
+  if (!confirm('Advance the game for everyone?')) return;
+  act(() => api('/api/deputy/advance', { fromPhase }));
 }
 
 function renderQuestion() {
@@ -526,6 +543,7 @@ function renderGuessing(qq) {
     <div class="err">${esc(S.err.game || '')}</div>`}
     ${playerChips(qq, a => a.hasGuess, 'guesses in')}
     ${hostAdvance(qq, 'guessing', 'Reveal all guesses')}
+    ${deputyBar('guessing', 'Reveal all guesses')}
   </div>`;
 }
 
@@ -547,6 +565,7 @@ function renderReveal(qq) {
     </div>` : '<p class="muted">Nobody guessed! Tough crowd.</p>'}
     ${isHost ? `<p class="small muted mt">Green = counts as a correct guess (auto-judged — fix any I got wrong). Answer: <b>${esc(qq.answer)}</b></p>` : ''}
     ${hostAdvance(qq, 'reveal', 'Open multiple choice')}
+    ${deputyBar('reveal', 'Open multiple choice')}
   </div>`;
 }
 
@@ -566,6 +585,7 @@ function renderChoosing(qq) {
     <div class="err">${esc(S.err.game || '')}</div>
     ${playerChips(qq, a => a.hasChoice, 'locked in')}
     ${hostAdvance(qq, 'choosing', 'Show results')}
+    ${deputyBar('choosing', 'Show results')}
   </div>`;
 }
 
@@ -1078,7 +1098,8 @@ Object.assign(window, {
   startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice, forfeitQ,
   setStatsRound, setStatsPeriod, applyStatsRange, passGuess, removeQ, recallQ, deletePlayer,
-  restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, S, render,
+  restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, deputyStart, deputyAdv,
+  S, render,
 });
 
 if (S.token) { connectSSE(); refresh(); }

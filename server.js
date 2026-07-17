@@ -688,14 +688,12 @@ route('POST', /^\/api\/host\/question\/(\d+)\/start$/, async (req, res, player, 
 });
 
 const PHASE_FLOW = { guessing: 'reveal', reveal: 'choosing', choosing: 'results' };
-route('POST', /^\/api\/host\/question\/(\d+)\/advance$/, async (req, res, player, m) => {
-  const round = requireHost(res, player);
-  if (!round) return;
-  const question = q.question.get(Number(m[1]));
-  const next = question && PHASE_FLOW[question.phase];
-  if (!next) return fail(res, 409, 'Cannot advance from this phase');
+
+function advanceQuestion(question) {
+  const next = PHASE_FLOW[question.phase];
+  if (!next) return null;
   if (next === 'reveal') {
-    // Simultaneous reveal: auto-judge every written guess (host can override).
+    // Simultaneous reveal: auto-judge every written guess (host can override, even later).
     for (const row of q.answersFor.all(question.id)) {
       if (row.guess !== null) {
         db.prepare('UPDATE answers SET guess_correct = ? WHERE question_id = ? AND player_id = ?')
@@ -705,6 +703,47 @@ route('POST', /^\/api\/host\/question\/(\d+)\/advance$/, async (req, res, player
   }
   db.prepare('UPDATE questions SET phase = ? WHERE id = ?').run(next, question.id);
   if (next === 'results') finalizeQuestion(question);
+  return next;
+}
+
+route('POST', /^\/api\/host\/question\/(\d+)\/advance$/, async (req, res, player, m) => {
+  const round = requireHost(res, player);
+  if (!round) return;
+  const question = q.question.get(Number(m[1]));
+  if (!question || !advanceQuestion(question)) return fail(res, 409, 'Cannot advance from this phase');
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
+// --- host-away (deputy) mode: any player can run the game when the host is out.
+// Deputies never see answers; auto-judge grades guesses and the host can flip calls later.
+
+route('POST', /^\/api\/deputy\/start$/, async (req, res, player) => {
+  const round = q.activeRound.get();
+  if (!round) return fail(res, 409, 'No active round');
+  const s = ensureTodaySession(round);
+  const cur = q.currentQuestion.get(s.id);
+  if (cur) {
+    if (cur.phase !== 'results') return fail(res, 409, 'A question is already in play');
+    db.prepare(`UPDATE questions SET phase = 'closed' WHERE id = ?`).run(cur.id);
+  }
+  const draft = db.prepare(`SELECT * FROM questions WHERE round_id = ? AND phase = 'draft' ORDER BY id LIMIT 1`).get(round.id);
+  if (!draft) return fail(res, 409, 'The question queue is empty');
+  db.prepare(`UPDATE questions SET phase = 'guessing', session_id = ?, asked_at = datetime('now') WHERE id = ?`)
+    .run(s.id, draft.id);
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
+route('POST', /^\/api\/deputy\/advance$/, async (req, res, player) => {
+  const body = await readBody(req);
+  const round = q.activeRound.get();
+  const s = round && q.openSession.get(round.id);
+  const cur = s && q.currentQuestion.get(s.id);
+  if (!cur) return fail(res, 409, 'No question in play');
+  // Guard against two deputies tapping at once: the second tap no-ops.
+  if (body.fromPhase && body.fromPhase !== cur.phase) return fail(res, 409, 'Someone already advanced it');
+  if (!advanceQuestion(cur)) return fail(res, 409, 'Cannot advance from this phase');
   broadcast();
   json(res, 200, { ok: true });
 });
