@@ -254,9 +254,11 @@ details.host-tools > div { margin-top: 12px; }
 .round-block { margin-bottom: 26px; }
 .round-block .round-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .round-block .round-head h2 { font-size: 1.1rem; }
-.session-list { display: flex; flex-wrap: wrap; gap: 10px; }
-.session-list button { padding: 10px 16px; }
-.session-list .cnt { color: var(--muted); font-size: 0.82rem; }
+.day-card { padding: 16px 20px; }
+.qlist { margin: 4px 0 12px 22px; }
+.qlist li { margin-bottom: 5px; }
+.qlist li button { padding: 2px 10px; font-size: 0.82rem; }
+.chip .daypts { color: var(--accent); margin-left: 3px; }
 
 .locked-q {
   border: 1.5px dashed var(--line); border-radius: 12px; padding: 18px;

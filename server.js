@@ -891,9 +891,11 @@ route('POST', /^\/api\/host\/session\/end$/, async (req, res, player) => {
 
 // --- history ---
 
-route('GET', /^\/api\/history$/, (req, res) => {
+route('GET', /^\/api\/history$/, (req, res, player) => {
+  const playersAll = q.allPlayers.all();
   const rounds = db.prepare(`SELECT r.*, p.name AS host_name, p.emoji AS host_emoji
                              FROM rounds r JOIN players p ON p.id = r.host_id ORDER BY r.id DESC`).all();
+  const hasFinalized = db.prepare('SELECT 1 FROM answers WHERE question_id = ? AND player_id = ? AND finalized = 1');
   json(res, 200, {
     rounds: rounds.map(r => ({
       id: r.id,
@@ -901,10 +903,41 @@ route('GET', /^\/api\/history$/, (req, res) => {
       hostName: r.host_name,
       hostEmoji: r.host_emoji,
       status: r.status,
-      sessions: db.prepare(`SELECT s.id, s.date, s.status,
-                              (SELECT COUNT(*) FROM questions qq WHERE qq.session_id = s.id AND qq.phase != 'draft' AND qq.deleted = 0) AS question_count
-                            FROM sessions s WHERE s.round_id = ? ORDER BY s.date DESC, s.id DESC`).all(r.id)
-        .map(s => ({ id: s.id, date: s.date, status: s.status, questionCount: s.question_count })),
+      sessions: db.prepare(`SELECT s.id, s.date, s.status FROM sessions s WHERE s.round_id = ? ORDER BY s.date DESC, s.id DESC`).all(r.id)
+        .map(s => {
+          const qs = db.prepare(`SELECT * FROM questions WHERE session_id = ? AND phase != 'draft' AND deleted = 0 ORDER BY asked_at, id`).all(s.id);
+          const finished = qq => qq.phase === 'results' || qq.phase === 'closed';
+          // Day points: finalized answers plus imported points on this date.
+          const pts = new Map();
+          for (const qq of qs) {
+            for (const a of q.answersFor.all(qq.id)) {
+              if (a.finalized && !a.forfeited) pts.set(a.player_id, (pts.get(a.player_id) || 0) + a.points);
+            }
+          }
+          for (const lp of db.prepare('SELECT player_id, SUM(points) AS p FROM legacy_points WHERE round_id = ? AND date = ? GROUP BY player_id').all(r.id, s.date)) {
+            pts.set(lp.player_id, (pts.get(lp.player_id) || 0) + lp.p);
+          }
+          const pending = playersAll.filter(p =>
+            p.id !== r.host_id &&
+            qs.some(qq => finished(qq) && !hasFinalized.get(qq.id, p.id) && !coveredByImport(qq, p.id)));
+          return {
+            id: s.id,
+            date: s.date,
+            status: s.status,
+            questionCount: qs.length,
+            questions: qs.map((qq, i) => finished(qq) && canViewDetail(qq, player, r.host_id)
+              ? { id: qq.id, text: qq.text }
+              : { id: qq.id, index: i + 1, locked: true, canMakeup: finished(qq) && !coveredByImport(qq, player.id) }),
+            points: [...pts.entries()]
+              .map(([pid, points]) => {
+                const p = playersAll.find(x => x.id === pid);
+                return p ? { name: p.name, emoji: p.emoji, points } : null;
+              })
+              .filter(Boolean)
+              .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name)),
+            pending: pending.map(p => p.name),
+          };
+        }),
     })),
   });
 });

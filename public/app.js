@@ -881,10 +881,24 @@ function renderHistory() {
       <h2>${esc(r.topic)}</h2>
       <span class="muted small">hosted by ${esc(r.hostName)}${r.status === 'archived' ? ' · archived' : ''}</span>
     </div>
-    ${r.sessions.length ? `<div class="session-list">
-      ${r.sessions.map(s => `<button onclick="openSession(${s.id})">${esc(s.date)}${s.status === 'open' ? ' · live' : ''}
-        <div class="cnt">${s.questionCount} question${s.questionCount === 1 ? '' : 's'}</div></button>`).join('')}
-    </div>` : '<p class="muted small">No games in this round yet.</p>'}
+    ${r.sessions.length ? r.sessions.map(s => `<div class="card day-card">
+      <div class="row" style="margin-bottom:6px">
+        <b>${esc(s.date)}</b>
+        <span class="muted small">${s.questionCount} question${s.questionCount === 1 ? '' : 's'}${s.status === 'open' ? ' · live' : ''}</span>
+        <span class="grow"></span>
+        <button class="ghost" onclick="openSession(${s.id})">Full detail</button>
+      </div>
+      ${s.questions.length ? `<ol class="qlist">
+        ${s.questions.map(qq => qq.locked
+          ? `<li class="muted">Hidden until you play it
+              ${qq.canMakeup ? `<button class="ghost" onclick="S.makeupReturn='history';startMakeup(${qq.id})">Play it</button>` : ''}</li>`
+          : `<li>${esc(qq.text)}</li>`).join('')}
+      </ol>` : ''}
+      ${s.points.length ? `<div class="waiting-list">
+        ${s.points.map(p => `<span class="chip">${avatar(p.name, p.emoji)} ${esc(p.name)} <b class="daypts">+${p.points}</b></span>`).join('')}
+      </div>` : '<p class="muted small">No points recorded this day.</p>'}
+      ${s.pending.length ? `<p class="small muted mt">Needs makeup: ${s.pending.map(n => esc(n)).join(', ')}</p>` : ''}
+    </div>`).join('') : '<p class="muted small">No games in this round yet.</p>'}
   </div>`).join('');
 }
 
