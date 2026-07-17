@@ -73,6 +73,7 @@ async function refresh() {
   if (!S.token) return;
   try {
     S.game = await api('/api/state');
+    maybeCelebrate();
     if (S.view === 'history' && S.sessionDetail && !S.makeup) {
       S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
     }
@@ -81,6 +82,56 @@ async function refresh() {
   } catch (e) { /* transient */ }
 }
 window.addEventListener('focus', refresh);
+
+// ---------- confetti ----------
+
+function confettiBurst(points) {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'confetti-canvas';
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const colors = ['#3574e3', '#ff5050', '#ffcc01', '#3d4fd7', '#ffbab9', '#1b24a2'];
+  const parts = Array.from({ length: 70 + points * 40 }, () => ({
+    x: innerWidth / 2 + (Math.random() - 0.5) * innerWidth * 0.3,
+    y: innerHeight * 0.35,
+    vx: (Math.random() - 0.5) * 16,
+    vy: -Math.random() * 15 - 5,
+    w: 6 + Math.random() * 6,
+    h: 8 + Math.random() * 8,
+    rot: Math.random() * Math.PI,
+    vr: (Math.random() - 0.5) * 0.3,
+    color: colors[Math.floor(Math.random() * colors.length)],
+  }));
+  let frames = 0;
+  (function tick() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const p of parts) {
+      p.vy += 0.35; p.x += p.vx; p.y += p.vy; p.rot += p.vr; p.vx *= 0.99;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+    if (++frames < 160) requestAnimationFrame(tick);
+    else canvas.remove();
+  })();
+}
+
+// Fire once per question when results land and I scored. Two-pointers get an encore.
+function maybeCelebrate() {
+  const qq = S.game && S.game.question;
+  if (!qq || qq.phase !== 'results' || qq.locked || S.celebratedQ === qq.id) return;
+  S.celebratedQ = qq.id;
+  const mine = (qq.answers || []).find(a => a.playerId === S.game.me.id);
+  if (mine && mine.points > 0) {
+    confettiBurst(mine.points);
+    if (mine.points === 2) setTimeout(() => confettiBurst(2), 450);
+  }
+}
 
 // ---------- input preservation across re-renders ----------
 
@@ -781,6 +832,11 @@ function makeupChoice(i) {
   act(async () => {
     const r = await api(`/api/makeup/${S.makeup.id}/choice`, { choice: i });
     S.makeup.data = { stage: 'done', detail: r.detail };
+    const mine = r.detail.answers.find(a => a.playerId === S.me.id);
+    if (mine && mine.points > 0) {
+      confettiBurst(mine.points);
+      if (mine.points === 2) setTimeout(() => confettiBurst(2), 450);
+    }
   }, 'makeup');
 }
 

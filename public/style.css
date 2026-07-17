@@ -278,6 +278,8 @@ table.stats tr:first-child td { font-weight: 700; }
 
 .empty { text-align: center; color: var(--muted); padding: 40px 20px; }
 
+.confetti-canvas { position: fixed; inset: 0; pointer-events: none; z-index: 100; }
+
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: #fff; padding: 10px 20px; border-radius: 10px;
