@@ -329,7 +329,8 @@ function questionDetail(question, canJudge) {
     roundHostId: (db.prepare('SELECT host_id FROM rounds WHERE id = ?').get(question.round_id) || {}).host_id,
     historical: !!question.historical,
     covered: question.historical && question.session_id
-      ? db.prepare(`SELECT p.id, p.name FROM legacy_points lp JOIN players p ON p.id = lp.player_id
+      ? db.prepare(`SELECT p.id, p.name, p.emoji, SUM(lp.points) AS points
+                    FROM legacy_points lp JOIN players p ON p.id = lp.player_id
                     WHERE lp.date = (SELECT date FROM sessions WHERE id = ?) AND p.deleted = 0
                     GROUP BY p.id ORDER BY p.name`).all(question.session_id)
       : [],

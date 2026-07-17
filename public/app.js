@@ -595,14 +595,19 @@ function resultsTable(qq, canJudge) {
   return `<table class="results">
     <tr><th>Player</th><th>Written guess</th><th>Multiple choice</th><th>Points</th></tr>
     ${qq.answers.map(a => resultRow(a, qq, canJudge)).join('')}
+    ${covered.map(p => `<tr>
+      <td>${avatar(p.name, p.emoji)} ${esc(p.name)} <span class="badge">pre-app</span></td>
+      <td colspan="2"><span class="muted">played before the app</span></td>
+      <td><span class="pts ${p.points >= 2 ? 'two' : p.points ? 'one' : 'zero'}">+${p.points}</span>
+        <span class="muted small">that day</span></td>
+    </tr>`).join('')}
     ${missed.map(p => `<tr>
       <td>${avatar(p.name, p.emoji)} ${esc(p.name)} <span class="badge makeup">missed</span></td>
       <td><span class="muted">—</span></td>
       <td><span class="muted">—</span></td>
       <td><span class="muted small">makeup pending</span></td>
     </tr>`).join('')}
-  </table>
-  ${covered.length ? `<p class="small muted mt">Played before the app (covered by imported points): ${covered.map(c => esc(c.name)).join(', ')}.</p>` : ''}`;
+  </table>`;
 }
 
 function callouts(qq) {
