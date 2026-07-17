@@ -1039,18 +1039,6 @@ route('POST', /^\/api\/makeup\/(\d+)\/choice$/, async (req, res, player, m) => {
   json(res, 200, { ok: true, detail: questionDetail(question, false) });
 });
 
-route('POST', /^\/api\/makeup\/(\d+)\/forfeit$/, async (req, res, player, m) => {
-  const question = q.question.get(Number(m[1]));
-  if (!question || (question.phase !== 'results' && question.phase !== 'closed')) {
-    return fail(res, 409, 'Question not available');
-  }
-  if (coveredByImport(question, player.id)) return fail(res, 409, 'Your imported points already cover this day');
-  if (q.myAnswer.get(question.id, player.id)) return fail(res, 409, 'Already started — finish it instead');
-  db.prepare('INSERT INTO answers (question_id, player_id, is_makeup, forfeited, finalized) VALUES (?, ?, 1, 1, 1)')
-    .run(question.id, player.id);
-  broadcast();
-  json(res, 200, { ok: true, detail: questionDetail(question, false) });
-});
 
 // --- stats ---
 

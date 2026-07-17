@@ -531,7 +531,6 @@ function renderLockedResults(qq, recent) {
       You didn't get an answer in for this one, so the results are hidden.
       <div class="row mt" style="justify-content:center">
         <button class="primary" onclick="playMakeup(${qq.id})">Play it now</button>
-        <button onclick="forfeitQ(${qq.id})">Just show me (0 pts)</button>
       </div>
     </div>
   </div>`;
@@ -934,8 +933,7 @@ function renderSessionDetail() {
       <div class="locked-q">
         <b>Question ${qq.index}</b> — hidden because you haven't played it yet
         <div class="row mt" style="justify-content:center">
-          ${qq.canMakeup ? `<button class="primary" onclick="S.makeupReturn='history';startMakeup(${qq.id})">Play it now</button>
-          <button onclick="forfeitQ(${qq.id})">Just show me (0 pts)</button>` : '<span class="muted small">still in play</span>'}
+          ${qq.canMakeup ? `<button class="primary" onclick="S.makeupReturn='history';startMakeup(${qq.id})">Play it now</button>` : '<span class="muted small">still in play</span>'}
         </div>
       </div>` : `
       <div class="card q-detail">
@@ -948,13 +946,6 @@ function renderSessionDetail() {
   </div>`;
 }
 
-function forfeitQ(id) {
-  if (!confirm('Reveal this question without playing? You get 0 points and it counts as viewed.')) return;
-  act(async () => {
-    await api(`/api/makeup/${id}/forfeit`, {});
-    if (S.sessionDetail) S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
-  });
-}
 
 // ---------- makeup ----------
 
@@ -1133,7 +1124,7 @@ function renderStats() {
 Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
   startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
-  cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice, forfeitQ,
+  cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice,
   setStatsRound, setStatsPeriod, applyStatsRange, passGuess, removeQ, recallQ, deletePlayer,
   restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, deputyStart, deputyAdv,
   S, render,
