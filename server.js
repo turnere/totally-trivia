@@ -951,18 +951,26 @@ route('POST', /^\/api\/makeup\/(\d+)\/forfeit$/, async (req, res, player, m) => 
 route('GET', /^\/api\/stats$/, (req, res) => {
   const url = new URL(req.url, 'http://x');
   const roundId = url.searchParams.get('roundId');
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const from = dateRe.test(url.searchParams.get('from') || '') ? url.searchParams.get('from') : null;
+  const to = dateRe.test(url.searchParams.get('to') || '') ? url.searchParams.get('to') : null;
   const rounds = db.prepare(`SELECT r.id, r.topic, r.status FROM rounds r ORDER BY r.id DESC`).all();
   let rows = db.prepare(`
-    SELECT a.*, qq.correct_index, qq.round_id FROM answers a
+    SELECT a.*, qq.correct_index, qq.round_id, s.date AS session_date FROM answers a
     JOIN questions qq ON qq.id = a.question_id
+    LEFT JOIN sessions s ON s.id = qq.session_id
     WHERE a.finalized = 1 AND qq.deleted = 0`).all();
   if (roundId && roundId !== 'all') rows = rows.filter(r => r.round_id === Number(roundId));
+  if (from) rows = rows.filter(r => r.session_date && r.session_date >= from);
+  if (to) rows = rows.filter(r => r.session_date && r.session_date <= to);
   const byPlayer = new Map();
   for (const p of q.allPlayers.all()) {
     byPlayer.set(p.id, { playerId: p.id, name: p.name, emoji: p.emoji, points: 0, played: 0, guesses: 0, guessRight: 0, mcRight: 0, twoPointers: 0, makeups: 0, imported: 0 });
   }
-  let legacy = db.prepare('SELECT player_id, round_id, points FROM legacy_points').all();
+  let legacy = db.prepare('SELECT player_id, round_id, date, points FROM legacy_points').all();
   if (roundId && roundId !== 'all') legacy = legacy.filter(r => r.round_id === Number(roundId));
+  if (from) legacy = legacy.filter(r => r.date >= from);
+  if (to) legacy = legacy.filter(r => r.date <= to);
   for (const r of legacy) {
     const s = byPlayer.get(r.player_id);
     if (!s) continue;

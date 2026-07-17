@@ -983,12 +983,39 @@ function makeupChoice(i) {
 
 // ---------- stats ----------
 
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function statsRange() {
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth();
+  if (S.statsPeriod === 'this') return { from: fmtDate(new Date(y, m, 1)), to: fmtDate(new Date(y, m + 1, 0)) };
+  if (S.statsPeriod === 'last') return { from: fmtDate(new Date(y, m - 1, 1)), to: fmtDate(new Date(y, m, 0)) };
+  if (S.statsPeriod === 'custom') return { from: S.statsFrom || '', to: S.statsTo || '' };
+  return {};
+}
+
 async function loadStats() {
-  S.stats = await api(`/api/stats?roundId=${S.statsRound}`);
+  const r = statsRange();
+  let qs = `roundId=${S.statsRound}`;
+  if (r.from) qs += `&from=${r.from}`;
+  if (r.to) qs += `&to=${r.to}`;
+  S.stats = await api(`/api/stats?${qs}`);
   render();
 }
 
 function setStatsRound(v) { S.statsRound = v; loadStats(); }
+function setStatsPeriod(v) {
+  S.statsPeriod = v;
+  if (v === 'custom') render();
+  else loadStats();
+}
+function applyStatsRange() {
+  S.statsFrom = document.getElementById('statsFrom').value;
+  S.statsTo = document.getElementById('statsTo').value;
+  loadStats();
+}
 
 function renderStats() {
   if (!S.stats) return '<div class="empty">Loading…</div>';
@@ -998,10 +1025,26 @@ function renderStats() {
     <div class="row" style="margin-bottom:14px">
       <h2 class="grow">Leaderboard</h2>
       <select style="width:auto" onchange="setStatsRound(this.value)">
-        <option value="all" ${S.statsRound === 'all' ? 'selected' : ''}>All time</option>
+        <option value="all" ${S.statsRound === 'all' ? 'selected' : ''}>All rounds</option>
         ${st.rounds.map(r => `<option value="${r.id}" ${S.statsRound == r.id ? 'selected' : ''}>${esc(r.topic)}${r.status === 'active' ? ' (current)' : ''}</option>`).join('')}
       </select>
+      <select style="width:auto" onchange="setStatsPeriod(this.value)">
+        <option value="all" ${(S.statsPeriod || 'all') === 'all' ? 'selected' : ''}>All time</option>
+        <option value="this" ${S.statsPeriod === 'this' ? 'selected' : ''}>This month</option>
+        <option value="last" ${S.statsPeriod === 'last' ? 'selected' : ''}>Last month</option>
+        <option value="custom" ${S.statsPeriod === 'custom' ? 'selected' : ''}>Custom range</option>
+      </select>
     </div>
+    ${S.statsPeriod === 'custom' ? `<div class="row" style="margin-bottom:14px">
+      <input type="date" id="statsFrom" style="width:auto" value="${esc(S.statsFrom || '')}">
+      <span class="muted small">to</span>
+      <input type="date" id="statsTo" style="width:auto" value="${esc(S.statsTo || '')}">
+      <button onclick="applyStatsRange()">Apply</button>
+    </div>` : ''}
+    ${(S.statsPeriod && S.statsPeriod !== 'all') ? (() => {
+      const r = statsRange();
+      return `<p class="small muted" style="margin-bottom:10px">Showing ${esc(r.from || 'the beginning')} through ${esc(r.to || 'today')}.</p>`;
+    })() : ''}
     ${st.rows.length ? (() => {
       const anyImported = st.rows.some(r => r.imported > 0);
       return `<div style="overflow-x:auto"><table class="stats">
@@ -1017,7 +1060,7 @@ function renderStats() {
         <td>${r.makeups}</td>
       </tr>`).join('')}
     </table></div>`;
-    })() : '<p class="empty">No finished questions yet — stats appear after your first game.</p>'}
+    })() : `<p class="empty">${(S.statsPeriod && S.statsPeriod !== 'all') ? 'No points in this period.' : 'No finished questions yet — stats appear after your first game.'}</p>`}
     <p class="small muted mt">Guess acc. = written guesses judged correct. 2-pointers = guessed it and stuck with it.${st.rows.some(r => r.imported > 0) ? ' Points include imported history; accuracy columns only count games played in the app.' : ''}</p>
   </div>`;
 }
@@ -1028,8 +1071,8 @@ Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
   startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice, forfeitQ,
-  setStatsRound, passGuess, removeQ, recallQ, deletePlayer, restorePlayer, playMakeup, setMyBird,
-  importPoints, clearImports, tvLogin, S, render,
+  setStatsRound, setStatsPeriod, applyStatsRange, passGuess, removeQ, recallQ, deletePlayer,
+  restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, S, render,
 });
 
 if (S.token) { connectSSE(); refresh(); }
