@@ -78,8 +78,9 @@ async function refresh() {
   try {
     S.game = await api('/api/state');
     maybeCelebrate();
-    if (S.view === 'history' && S.sessionDetail && !S.makeup) {
-      S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
+    if (S.view === 'history' && !S.makeup) {
+      if (S.sessionDetail) S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
+      else S.history = await api('/api/history');
     }
     if (S.view === 'stats') S.stats = await api(`/api/stats?roundId=${S.statsRound}`);
     render();
@@ -662,9 +663,9 @@ function renderHostTools() {
         <div class="decoy-inputs">
           ${[0, 1, 2, 3].map(i => `<input type="text" id="decoy${i}" placeholder="Decoy ${i + 1}${i > 1 ? ' (optional)' : ''}" value="${esc(val('decoy' + i))}">`).join('')}
         </div>
-        ${editing ? '' : `<label class="mt" for="qdate">Backdate (optional)</label>
+        <label class="mt" for="qdate">Backdate (optional)</label>
         <input type="text" id="qdate" placeholder="YYYY-MM-DD — recreate a question from before the app" value="${esc(val('qdate'))}">
-        <p class="small muted">Backdated questions go straight into that day's History as already played. Anyone with imported points on that date is covered; everyone else gets it as a makeup.</p>`}
+        <p class="small muted">Leave blank to queue it normally. With a date, it goes straight into that day's History as already played — people with imported points on that date are covered; everyone else gets it as a makeup.</p>
         <div class="err">${esc(S.err.host || '')}</div>
         ${S.hostMsg ? `<p class="small" style="color:var(--accent)">${esc(S.hostMsg)}</p>` : ''}
         <div class="row">

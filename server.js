@@ -637,6 +637,22 @@ route('POST', /^\/api\/host\/question\/(\d+)\/update$/, async (req, res, player,
   const parsed = parseQuestionBody(body);
   if (parsed.error) return fail(res, 400, parsed.error);
   const { choices, correctIndex } = shuffleIn(parsed.answer, parsed.decoys);
+  if (body.date) {
+    // Editing a draft with a backdate converts it into a historical question.
+    const date = parseImportDate(body.date);
+    if (!date) return fail(res, 400, 'Bad backdate (use YYYY-MM-DD or M/D/YYYY)');
+    if (date > todayStr()) return fail(res, 400, 'Backdate is in the future');
+    let s = db.prepare('SELECT * FROM sessions WHERE round_id = ? AND date = ?').get(round.id, date);
+    if (!s) {
+      db.prepare(`INSERT INTO sessions (round_id, date, status) VALUES (?, ?, 'closed')`).run(round.id, date);
+      s = db.prepare('SELECT * FROM sessions WHERE round_id = ? AND date = ?').get(round.id, date);
+    }
+    db.prepare(`UPDATE questions SET text = ?, answer = ?, choices = ?, correct_index = ?,
+                phase = 'closed', historical = 1, session_id = ?, asked_at = ? WHERE id = ?`)
+      .run(parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, s.id, `${date} 12:00:00`, question.id);
+    broadcast();
+    return json(res, 200, { ok: true, backdated: date });
+  }
   db.prepare('UPDATE questions SET text = ?, answer = ?, choices = ?, correct_index = ? WHERE id = ?')
     .run(parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, question.id);
   broadcast();
