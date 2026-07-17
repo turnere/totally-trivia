@@ -81,6 +81,7 @@ for (const stmt of [
 const BIRD_AVATARS = new Set([
   'cardinal', 'bluejay', 'owl', 'penguin', 'flamingo', 'mallard',
   'chickadee', 'goldfinch', 'toucan', 'puffin', 'hummingbird', 'crow',
+  'falcon', 'eagle', 'loon',
 ]);
 
 // ---------- helpers ----------

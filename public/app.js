@@ -22,6 +22,7 @@ const BIRDS = {
   cardinal: 'Cardinal', bluejay: 'Blue Jay', owl: 'Owl', penguin: 'Penguin',
   flamingo: 'Flamingo', mallard: 'Mallard', chickadee: 'Chickadee', goldfinch: 'Goldfinch',
   toucan: 'Toucan', puffin: 'Puffin', hummingbird: 'Hummingbird', crow: 'Crow',
+  falcon: 'Falcon', eagle: 'Eagle', loon: 'Loon',
 };
 function avatar(name, bird) {
   if (bird && BIRDS[bird]) {
