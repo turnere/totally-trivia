@@ -54,6 +54,14 @@ CREATE TABLE IF NOT EXISTS questions (
   asked_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS legacy_points (
+  id INTEGER PRIMARY KEY,
+  round_id INTEGER REFERENCES rounds(id),
+  player_id INTEGER NOT NULL REFERENCES players(id),
+  date TEXT NOT NULL,
+  points INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS answers (
   question_id INTEGER NOT NULL REFERENCES questions(id),
   player_id INTEGER NOT NULL REFERENCES players(id),
@@ -260,6 +268,9 @@ function buildState(viewer) {
     todayScores,
     makeups: round ? pendingMakeups(round, viewer).map(m => ({ id: m.id, date: m.date })) : [],
     deletedPlayers: isHost ? q.deletedPlayers.all() : undefined,
+    importedPoints: isHost && round
+      ? db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(points), 0) AS total FROM legacy_points WHERE round_id = ?').get(round.id)
+      : undefined,
   };
 }
 
@@ -619,6 +630,67 @@ route('POST', /^\/api\/host\/question\/(\d+)\/remove$/, async (req, res, player,
   json(res, 200, { ok: true });
 });
 
+// Import historical points: lines of "date, name, points" (comma or tab separated).
+// Stored as a legacy ledger on the active round — no fake questions. Atomic: any bad line rejects the batch.
+function parseImportDate(s) {
+  s = s.trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) {
+    const y = m[3].length === 2 ? `20${m[3]}` : m[3];
+    return `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  }
+  return null;
+}
+
+route('POST', /^\/api\/host\/import$/, async (req, res, player) => {
+  const round = requireHost(res, player);
+  if (!round) return;
+  const body = await readBody(req);
+  const lines = String(body.text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return fail(res, 400, 'Nothing to import');
+  if (lines.length > 2000) return fail(res, 400, 'Too many lines (max 2000)');
+  const byName = new Map(db.prepare('SELECT id, name, deleted FROM players').all().map(p => [p.name.toLowerCase(), p]));
+  const errors = [];
+  const rows = [];
+  const toCreate = new Map();
+  lines.forEach((line, i) => {
+    const parts = (line.includes('\t') ? line.split('\t') : line.split(',')).map(p => p.trim());
+    if (parts.length !== 3) return errors.push(`Line ${i + 1}: expected "date, name, points"`);
+    const [rawDate, name, rawPts] = parts;
+    const date = parseImportDate(rawDate);
+    if (!date) return errors.push(`Line ${i + 1}: bad date "${rawDate}" (use YYYY-MM-DD or M/D/YYYY)`);
+    const points = Number(rawPts);
+    if (!Number.isInteger(points) || points < 0 || points > 1000) return errors.push(`Line ${i + 1}: bad points "${rawPts}"`);
+    const key = name.toLowerCase();
+    const existing = byName.get(key);
+    if (existing && existing.deleted) return errors.push(`Line ${i + 1}: "${name}" is a deleted player — restore them first`);
+    if (!existing && !toCreate.has(key)) {
+      if (!body.createMissing) return errors.push(`Line ${i + 1}: no player named "${name}" (tick "create missing players" or fix the name)`);
+      toCreate.set(key, name);
+    }
+    rows.push({ date, key, points });
+  });
+  if (errors.length) return fail(res, 400, errors.slice(0, 6).join(' · ') + (errors.length > 6 ? ` · (+${errors.length - 6} more)` : ''));
+  for (const [key, name] of toCreate) {
+    db.prepare('INSERT INTO players (name, emoji) VALUES (?, ?)').run(name, '');
+    byName.set(key, db.prepare('SELECT id, name, deleted FROM players WHERE lower(name) = ?').get(key));
+  }
+  const ins = db.prepare('INSERT INTO legacy_points (round_id, player_id, date, points) VALUES (?, ?, ?, ?)');
+  for (const r of rows) ins.run(round.id, byName.get(r.key).id, r.date, r.points);
+  broadcast();
+  json(res, 200, { ok: true, imported: rows.length, created: [...toCreate.values()] });
+});
+
+route('POST', /^\/api\/host\/import\/clear$/, async (req, res, player) => {
+  const round = requireHost(res, player);
+  if (!round) return;
+  const n = db.prepare('DELETE FROM legacy_points WHERE round_id = ?').run(round.id);
+  broadcast();
+  json(res, 200, { ok: true, deleted: n.changes });
+});
+
 // Soft-delete / restore players (e.g. test accounts). Answers stay; stats ignore them.
 route('POST', /^\/api\/host\/player\/(\d+)\/delete$/, async (req, res, player, m) => {
   const round = requireHost(res, player);
@@ -796,7 +868,15 @@ route('GET', /^\/api\/stats$/, (req, res) => {
   if (roundId && roundId !== 'all') rows = rows.filter(r => r.round_id === Number(roundId));
   const byPlayer = new Map();
   for (const p of q.allPlayers.all()) {
-    byPlayer.set(p.id, { playerId: p.id, name: p.name, emoji: p.emoji, points: 0, played: 0, guesses: 0, guessRight: 0, mcRight: 0, twoPointers: 0, makeups: 0 });
+    byPlayer.set(p.id, { playerId: p.id, name: p.name, emoji: p.emoji, points: 0, played: 0, guesses: 0, guessRight: 0, mcRight: 0, twoPointers: 0, makeups: 0, imported: 0 });
+  }
+  let legacy = db.prepare('SELECT player_id, round_id, points FROM legacy_points').all();
+  if (roundId && roundId !== 'all') legacy = legacy.filter(r => r.round_id === Number(roundId));
+  for (const r of legacy) {
+    const s = byPlayer.get(r.player_id);
+    if (!s) continue;
+    s.points += r.points;
+    s.imported += r.points;
   }
   for (const r of rows) {
     const s = byPlayer.get(r.player_id);

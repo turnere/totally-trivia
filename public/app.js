@@ -504,6 +504,18 @@ function renderHostTools() {
           <p class="small muted">Deleting is soft: they vanish from the game and stats, but their answers are kept and restoring brings everything back.</p>
         </div>
         <div class="mt">
+          <label>Import old points</label>
+          <p class="small muted">One entry per line: <b>date, name, points</b> — commas or tabs, so pasting from a spreadsheet works. Dates like 2026-06-12 or 6/12/2026. Lands in this round's stats as imported points.</p>
+          <textarea id="importText" rows="5" placeholder="2026-06-12, Nina, 2&#10;2026-06-12, Eric, 1">${esc(val('importText'))}</textarea>
+          <div class="row mt">
+            <label class="row small" style="font-weight:400;width:auto"><input type="checkbox" id="importCreate" ${S.importCreate ? 'checked' : ''} onchange="S.importCreate=this.checked"> create missing players</label>
+            <button onclick="importPoints()">Import</button>
+          </div>
+          ${g.importedPoints && g.importedPoints.count ? `<p class="small muted">This round has ${g.importedPoints.count} imported entries worth ${g.importedPoints.total} pts. <button class="ghost danger" onclick="clearImports()">Delete them all</button></p>` : ''}
+          <div class="err">${esc(S.err.import || '')}</div>
+          ${S.importMsg ? `<p class="small" style="color:var(--accent)">${esc(S.importMsg)}</p>` : ''}
+        </div>
+        <div class="mt">
           <label>Or wrap this round and start a fresh topic</label>
           <input type="text" id="newtopic" placeholder="New topic (e.g. 90s Movies)" value="${esc(val('newtopic'))}">
           <div class="row mt">
@@ -553,6 +565,23 @@ function deletePlayer(id) {
   act(() => api(`/api/host/player/${id}/delete`, {}), 'round');
 }
 function restorePlayer(id) { act(() => api(`/api/host/player/${id}/restore`, {}), 'round'); }
+
+async function importPoints() {
+  S.err.import = ''; S.importMsg = '';
+  const text = document.getElementById('importText').value;
+  const createMissing = document.getElementById('importCreate').checked;
+  try {
+    const r = await api('/api/host/import', { text, createMissing });
+    S.importMsg = `Imported ${r.imported} entr${r.imported === 1 ? 'y' : 'ies'}${r.created.length ? ` and created ${r.created.join(', ')}` : ''}.`;
+    clearVal('importText');
+  } catch (e) { S.err.import = e.message; }
+  refresh();
+}
+function clearImports() {
+  if (!confirm('Delete ALL imported points in this round? (The real game results are untouched.)')) return;
+  S.importMsg = '';
+  act(() => api('/api/host/import/clear', {}), 'import');
+}
 function submitChoice(i) { act(() => api('/api/choice', { choice: i })); }
 function advance(id) { act(() => api(`/api/host/question/${id}/advance`, {}), 'host'); }
 function judge(qid, pid, correct) { act(() => api('/api/host/judge', { questionId: qid, playerId: pid, correct }), 'host'); }
@@ -776,19 +805,23 @@ function renderStats() {
         ${st.rounds.map(r => `<option value="${r.id}" ${S.statsRound == r.id ? 'selected' : ''}>${esc(r.topic)}${r.status === 'active' ? ' (current)' : ''}</option>`).join('')}
       </select>
     </div>
-    ${st.rows.length ? `<div style="overflow-x:auto"><table class="stats">
-      <tr><th>Player</th><th>Points</th><th>Played</th><th>Guess acc.</th><th>MC acc.</th><th>2-pointers</th><th>Makeups</th></tr>
+    ${st.rows.length ? (() => {
+      const anyImported = st.rows.some(r => r.imported > 0);
+      return `<div style="overflow-x:auto"><table class="stats">
+      <tr><th>Player</th><th>Points</th>${anyImported ? '<th>Imported</th>' : ''}<th>Played</th><th>Guess acc.</th><th>MC acc.</th><th>2-pointers</th><th>Makeups</th></tr>
       ${st.rows.map((r, i) => `<tr>
         <td>${avatar(r.name, r.emoji)} ${esc(r.name)}</td>
         <td><b>${r.points}</b></td>
+        ${anyImported ? `<td>${r.imported || 0}</td>` : ''}
         <td>${r.played}</td>
         <td>${pct(r.guessRight, r.guesses)}</td>
         <td>${pct(r.mcRight, r.played)}</td>
         <td>${r.twoPointers}</td>
         <td>${r.makeups}</td>
       </tr>`).join('')}
-    </table></div>` : '<p class="empty">No finished questions yet — stats appear after your first game.</p>'}
-    <p class="small muted mt">Guess acc. = written guesses judged correct. 2-pointers = guessed it and stuck with it.</p>
+    </table></div>`;
+    })() : '<p class="empty">No finished questions yet — stats appear after your first game.</p>'}
+    <p class="small muted mt">Guess acc. = written guesses judged correct. 2-pointers = guessed it and stuck with it.${st.rows.some(r => r.imported > 0) ? ' Points include imported history; accuracy columns only count games played in the app.' : ''}</p>
   </div>`;
 }
 
@@ -798,7 +831,8 @@ Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
   startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice, forfeitQ,
-  setStatsRound, passGuess, removeQ, recallQ, deletePlayer, restorePlayer, playMakeup, setMyBird, S, render,
+  setStatsRound, passGuess, removeQ, recallQ, deletePlayer, restorePlayer, playMakeup, setMyBird,
+  importPoints, clearImports, S, render,
 });
 
 if (S.token) { connectSSE(); refresh(); }
