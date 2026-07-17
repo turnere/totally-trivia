@@ -1088,20 +1088,22 @@ function renderStats() {
     ${st.rows.length ? (() => {
       const anyImported = st.rows.some(r => r.imported > 0);
       return `<div style="overflow-x:auto"><table class="stats">
-      <tr><th>Player</th><th>Points</th>${anyImported ? '<th>Imported</th>' : ''}<th>Played</th><th>Guess acc.</th><th>MC acc.</th><th>2-pointers</th><th>Makeups</th></tr>
+      <tr><th>Player</th><th>Points</th>${anyImported ? '<th>Imported</th>' : ''}<th>Played</th><th>Guess acc.</th><th>MC acc.</th><th>2-pointers</th><th>Makeups</th><th>Owed</th></tr>
       ${st.rows.map((r, i) => `<tr>
         <td>${avatar(r.name, r.emoji)} ${esc(r.name)}</td>
         <td><b>${r.points}</b></td>
         ${anyImported ? `<td>${r.imported || 0}</td>` : ''}
         <td>${r.played}</td>
         <td>${pct(r.guessRight, r.guesses)}</td>
-        <td>${pct(r.mcRight, r.played)}</td>
+        <td>${pct(r.mcRight, r.answered)}</td>
         <td>${r.twoPointers}</td>
         <td>${r.makeups}</td>
+        <td>${r.owed ? `<b style="color:var(--bad)">${r.owed}</b>` : '0'}</td>
       </tr>`).join('')}
     </table></div>`;
     })() : `<p class="empty">${(S.statsPeriod && S.statsPeriod !== 'all') ? 'No points in this period.' : 'No finished questions yet — stats appear after your first game.'}</p>`}
-    <p class="small muted mt">Guess acc. = written guesses judged correct. 2-pointers = guessed it and stuck with it.${st.rows.some(r => r.imported > 0) ? ' Points include imported history; accuracy columns only count games played in the app.' : ''}</p>
+    <p class="small muted mt">Guess acc. = written guesses judged correct. 2-pointers = guessed it and stuck with it.
+      Played includes pre-app days covered by imports; accuracy only counts in-app answers. Owed = makeups outstanding.</p>
   </div>`;
 }
 

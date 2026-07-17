@@ -1054,7 +1054,7 @@ route('GET', /^\/api\/stats$/, (req, res) => {
   if (to) rows = rows.filter(r => r.session_date && r.session_date <= to);
   const byPlayer = new Map();
   for (const p of q.allPlayers.all()) {
-    byPlayer.set(p.id, { playerId: p.id, name: p.name, emoji: p.emoji, points: 0, played: 0, guesses: 0, guessRight: 0, mcRight: 0, twoPointers: 0, makeups: 0, imported: 0 });
+    byPlayer.set(p.id, { playerId: p.id, name: p.name, emoji: p.emoji, points: 0, played: 0, answered: 0, guesses: 0, guessRight: 0, mcRight: 0, twoPointers: 0, makeups: 0, imported: 0, owed: 0 });
   }
   let legacy = db.prepare('SELECT player_id, round_id, date, points FROM legacy_points').all();
   if (roundId && roundId !== 'all') legacy = legacy.filter(r => r.round_id === Number(roundId));
@@ -1071,13 +1071,42 @@ route('GET', /^\/api\/stats$/, (req, res) => {
     if (!s) continue;
     s.points += r.points;
     if (r.forfeited) continue;
+    s.answered += 1;
     s.played += 1;
     if (r.guess !== null) { s.guesses += 1; if (r.guess_correct) s.guessRight += 1; }
     if (r.choice_index === r.correct_index) s.mcRight += 1;
     if (r.points === 2) s.twoPointers += 1;
     if (r.is_makeup) s.makeups += 1;
   }
-  const out = [...byPlayer.values()].filter(s => s.played > 0 || s.points > 0)
+  // Backdated questions covered by imported points count as played (pre-app plays).
+  let coveredRows = db.prepare(`
+    SELECT DISTINCT lp.player_id, qq.id AS qid, qq.round_id, s.date
+    FROM questions qq
+    JOIN sessions s ON s.id = qq.session_id
+    JOIN legacy_points lp ON lp.round_id = qq.round_id AND lp.date = s.date
+    WHERE qq.historical = 1 AND qq.deleted = 0 AND qq.phase IN ('results','closed')`).all();
+  if (roundId && roundId !== 'all') coveredRows = coveredRows.filter(r => r.round_id === Number(roundId));
+  if (from) coveredRows = coveredRows.filter(r => r.date >= from);
+  if (to) coveredRows = coveredRows.filter(r => r.date <= to);
+  for (const c of coveredRows) {
+    const s = byPlayer.get(c.player_id);
+    if (s) s.played += 1;
+  }
+  // Outstanding makeups: finished questions in scope with no finalized answer and no coverage.
+  const hostByRound = new Map(db.prepare('SELECT id, host_id FROM rounds').all().map(r => [r.id, r.host_id]));
+  let finishedQs = db.prepare(`
+    SELECT qq.id, qq.round_id, s.date FROM questions qq JOIN sessions s ON s.id = qq.session_id
+    WHERE qq.deleted = 0 AND qq.phase IN ('results','closed')`).all();
+  if (roundId && roundId !== 'all') finishedQs = finishedQs.filter(r => r.round_id === Number(roundId));
+  if (from) finishedQs = finishedQs.filter(r => r.date >= from);
+  if (to) finishedQs = finishedQs.filter(r => r.date <= to);
+  const doneSet = new Set(rows.map(r => `${r.question_id}:${r.player_id}`));
+  const covSet = new Set(coveredRows.map(c => `${c.qid}:${c.player_id}`));
+  for (const [pid, s] of byPlayer) {
+    s.owed = finishedQs.filter(qq =>
+      hostByRound.get(qq.round_id) !== pid && !doneSet.has(`${qq.id}:${pid}`) && !covSet.has(`${qq.id}:${pid}`)).length;
+  }
+  const out = [...byPlayer.values()].filter(s => s.played > 0 || s.points > 0 || s.owed > 0)
     .sort((a, b) => b.points - a.points || b.twoPointers - a.twoPointers || a.name.localeCompare(b.name));
   json(res, 200, { rounds: rounds.map(r => ({ id: r.id, topic: r.topic, status: r.status })), rows: out });
 });
