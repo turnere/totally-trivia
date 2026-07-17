@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS answers (
 for (const stmt of [
   'ALTER TABLE players ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE questions ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE questions ADD COLUMN historical INTEGER NOT NULL DEFAULT 0',
 ]) {
   try { db.exec(stmt); } catch { /* column already exists */ }
 }
@@ -190,7 +191,8 @@ function pendingMakeups(round, viewer) {
     SELECT qq.id, s.date FROM questions qq JOIN sessions s ON s.id = qq.session_id
     WHERE qq.round_id = ? AND qq.deleted = 0 AND qq.phase IN ('results','closed')
       AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id = qq.id AND a.player_id = ? AND a.finalized = 1)
-    ORDER BY qq.asked_at, qq.id`).all(round.id, viewer.id);
+      AND NOT (qq.historical = 1 AND EXISTS (SELECT 1 FROM legacy_points lp WHERE lp.player_id = ? AND lp.date = s.date))
+    ORDER BY qq.asked_at, qq.id`).all(round.id, viewer.id, viewer.id);
 }
 
 function questionPayload(question, viewer, isHost) {
@@ -285,6 +287,12 @@ function questionDetail(question, canJudge) {
     correctIndex: question.correct_index,
     canJudge: !!canJudge,
     roundHostId: (db.prepare('SELECT host_id FROM rounds WHERE id = ?').get(question.round_id) || {}).host_id,
+    historical: !!question.historical,
+    covered: question.historical && question.session_id
+      ? db.prepare(`SELECT p.id, p.name FROM legacy_points lp JOIN players p ON p.id = lp.player_id
+                    WHERE lp.date = (SELECT date FROM sessions WHERE id = ?) AND p.deleted = 0
+                    GROUP BY p.id ORDER BY p.name`).all(question.session_id)
+      : [],
     answers: q.answersFor.all(question.id).map(r => ({
       playerId: r.player_id,
       name: r.name,
@@ -373,10 +381,20 @@ function shuffleIn(answer, decoys) {
   return { choices, correctIndex: choices.indexOf(answer) };
 }
 
+// For a backdated (historical) question, imported points on that date count as
+// having played it in real life — those players are "covered".
+function coveredByImport(question, playerId) {
+  if (!question.historical || !question.session_id) return false;
+  const s = db.prepare('SELECT date FROM sessions WHERE id = ?').get(question.session_id);
+  if (!s) return false;
+  return !!db.prepare('SELECT 1 FROM legacy_points WHERE player_id = ? AND date = ? LIMIT 1').get(playerId, s.date);
+}
+
 // A viewer may see a finished question's full detail if they completed it
-// (played live, made it up, or forfeited) — or if they hosted that round.
+// (played live, made it up, or forfeited), hosted that round, or are covered by imports.
 function canViewDetail(question, viewer, roundHostId) {
   if (viewer.id === roundHostId) return true;
+  if (coveredByImport(question, viewer.id)) return true;
   const row = q.myAnswer.get(question.id, viewer.id);
   return !!(row && row.finalized);
 }
@@ -534,6 +552,22 @@ route('POST', /^\/api\/host\/question$/, async (req, res, player) => {
   const parsed = parseQuestionBody(body);
   if (parsed.error) return fail(res, 400, parsed.error);
   const { choices, correctIndex } = shuffleIn(parsed.answer, parsed.decoys);
+  if (body.date) {
+    // Backdated: goes straight into that day's history as an already-played question.
+    const date = parseImportDate(body.date);
+    if (!date) return fail(res, 400, 'Bad backdate (use YYYY-MM-DD or M/D/YYYY)');
+    if (date > todayStr()) return fail(res, 400, 'Backdate is in the future');
+    let s = db.prepare('SELECT * FROM sessions WHERE round_id = ? AND date = ?').get(round.id, date);
+    if (!s) {
+      db.prepare(`INSERT INTO sessions (round_id, date, status) VALUES (?, ?, 'closed')`).run(round.id, date);
+      s = db.prepare('SELECT * FROM sessions WHERE round_id = ? AND date = ?').get(round.id, date);
+    }
+    db.prepare(`INSERT INTO questions (round_id, session_id, text, answer, choices, correct_index, phase, historical, asked_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'closed', 1, ?)`)
+      .run(round.id, s.id, parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, `${date} 12:00:00`);
+    broadcast();
+    return json(res, 200, { ok: true, backdated: date });
+  }
   db.prepare('INSERT INTO questions (round_id, text, answer, choices, correct_index) VALUES (?, ?, ?, ?, ?)')
     .run(round.id, parsed.text, parsed.answer, JSON.stringify(choices), correctIndex);
   broadcast();
@@ -792,6 +826,7 @@ route('GET', /^\/api\/makeup\/(\d+)$/, (req, res, player, m) => {
   if (!question || (question.phase !== 'results' && question.phase !== 'closed')) {
     return fail(res, 409, 'Question not available for makeup');
   }
+  if (coveredByImport(question, player.id)) return fail(res, 409, 'Your imported points already cover this day');
   const row = q.myAnswer.get(question.id, player.id);
   if (row && row.finalized) {
     return json(res, 200, { stage: 'done', detail: questionDetail(question, false) });
@@ -817,6 +852,7 @@ route('POST', /^\/api\/makeup\/(\d+)\/guess$/, async (req, res, player, m) => {
   if (!question || (question.phase !== 'results' && question.phase !== 'closed')) {
     return fail(res, 409, 'Question not available for makeup');
   }
+  if (coveredByImport(question, player.id)) return fail(res, 409, 'Your imported points already cover this day');
   if (q.myAnswer.get(question.id, player.id)) return fail(res, 409, 'Already started');
   const body = await readBody(req);
   const guess = String(body.guess || '').trim().slice(0, 200);
@@ -848,6 +884,7 @@ route('POST', /^\/api\/makeup\/(\d+)\/forfeit$/, async (req, res, player, m) => 
   if (!question || (question.phase !== 'results' && question.phase !== 'closed')) {
     return fail(res, 409, 'Question not available');
   }
+  if (coveredByImport(question, player.id)) return fail(res, 409, 'Your imported points already cover this day');
   if (q.myAnswer.get(question.id, player.id)) return fail(res, 409, 'Already started — finish it instead');
   db.prepare('INSERT INTO answers (question_id, player_id, is_makeup, forfeited, finalized) VALUES (?, ?, 1, 1, 1)')
     .run(question.id, player.id);

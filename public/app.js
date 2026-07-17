@@ -464,7 +464,9 @@ function resultRow(a, qq, canJudge) {
 // Full results table: everyone who answered, then anyone who missed it (makeup pending).
 function resultsTable(qq, canJudge) {
   const hostId = qq.roundHostId ?? S.game.round?.hostId;
-  const missed = S.game.players.filter(p => p.id !== hostId && !qq.answers.some(a => a.playerId === p.id));
+  const covered = qq.covered || [];
+  const missed = S.game.players.filter(p =>
+    p.id !== hostId && !qq.answers.some(a => a.playerId === p.id) && !covered.some(c => c.id === p.id));
   return `<table class="results">
     <tr><th>Player</th><th>Written guess</th><th>Multiple choice</th><th>Points</th></tr>
     ${qq.answers.map(a => resultRow(a, qq, canJudge)).join('')}
@@ -474,7 +476,8 @@ function resultsTable(qq, canJudge) {
       <td><span class="muted">—</span></td>
       <td><span class="muted small">makeup pending</span></td>
     </tr>`).join('')}
-  </table>`;
+  </table>
+  ${covered.length ? `<p class="small muted mt">Played before the app (covered by imported points): ${covered.map(c => esc(c.name)).join(', ')}.</p>` : ''}`;
 }
 
 function renderResults(qq, recent) {
@@ -529,7 +532,11 @@ function renderHostTools() {
         <div class="decoy-inputs">
           ${[0, 1, 2, 3].map(i => `<input type="text" id="decoy${i}" placeholder="Decoy ${i + 1}${i > 1 ? ' (optional)' : ''}" value="${esc(val('decoy' + i))}">`).join('')}
         </div>
+        ${editing ? '' : `<label class="mt" for="qdate">Backdate (optional)</label>
+        <input type="text" id="qdate" placeholder="YYYY-MM-DD — recreate a question from before the app" value="${esc(val('qdate'))}">
+        <p class="small muted">Backdated questions go straight into that day's History as already played. Anyone with imported points on that date is covered; everyone else gets it as a makeup.</p>`}
         <div class="err">${esc(S.err.host || '')}</div>
+        ${S.hostMsg ? `<p class="small" style="color:var(--accent)">${esc(S.hostMsg)}</p>` : ''}
         <div class="row">
           <button class="primary" onclick="saveQuestion()">${editing ? 'Save changes' : 'Add to queue'}</button>
           ${editing ? '<button onclick="cancelEdit()">Cancel</button>' : ''}
@@ -662,16 +669,20 @@ function newRound() {
 }
 
 function saveQuestion() {
+  const dateEl = document.getElementById('qdate');
   const body = {
     text: document.getElementById('qtext').value.trim(),
     answer: document.getElementById('qanswer').value.trim(),
     decoys: [0, 1, 2, 3].map(i => document.getElementById('decoy' + i).value.trim()).filter(Boolean),
+    date: dateEl ? dateEl.value.trim() : '',
   };
   const path = S.editingDraft ? `/api/host/question/${S.editingDraft}/update` : '/api/host/question';
   act(async () => {
-    await api(path, body);
+    S.hostMsg = '';
+    const r = await api(path, body);
     S.editingDraft = null;
-    clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3');
+    clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate');
+    if (r.backdated) S.hostMsg = `Added to ${r.backdated} in History.`;
   }, 'host');
 }
 
