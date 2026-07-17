@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS tokens (
   player_id INTEGER NOT NULL REFERENCES players(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS spectator_tokens (
+  token TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS rounds (
   id INTEGER PRIMARY KEY,
   topic TEXT NOT NULL,
@@ -195,6 +199,40 @@ function pendingMakeups(round, viewer) {
     ORDER BY qq.asked_at, qq.id`).all(round.id, viewer.id, viewer.id);
 }
 
+// Consecutive-scoring streaks for a player, counting back from this question
+// through their finalized answers in this round (forfeits excluded).
+function streaksFor(playerId, question) {
+  const hist = db.prepare(`
+    SELECT a.points FROM answers a JOIN questions q2 ON q2.id = a.question_id
+    WHERE a.player_id = ? AND a.finalized = 1 AND a.forfeited = 0 AND q2.deleted = 0 AND q2.round_id = ?
+      AND (q2.asked_at < ? OR (q2.asked_at = ? AND q2.id <= ?))
+    ORDER BY q2.asked_at DESC, q2.id DESC LIMIT 40`)
+    .all(playerId, question.round_id, question.asked_at, question.asked_at, question.id)
+    .map(r => r.points);
+  let hot = 0;
+  for (const p of hist) { if (p > 0) hot++; else break; }
+  let perfect = 0;
+  for (const p of hist) { if (p === 2) perfect++; else break; }
+  let drySnapped = 0;
+  if (hist.length > 1 && hist[0] > 0) {
+    for (const p of hist.slice(1)) { if (p === 0) drySnapped++; else break; }
+  }
+  return { hot, perfect, drySnapped };
+}
+
+function buildCallouts(rows, question) {
+  const outs = [];
+  const scored = rows.filter(r => r.finalized && !r.forfeited).sort((a, b) => b.points - a.points);
+  for (const r of scored) {
+    const { hot, perfect, drySnapped } = streaksFor(r.player_id, question);
+    if (r.points === 2 && perfect >= 2) outs.push(`${r.name} stuck the landing ${perfect} in a row`);
+    else if (r.points > 0 && hot >= 3) outs.push(`${r.name} is on a ${hot}-question heater`);
+    else if (r.points > 0 && drySnapped >= 3) outs.push(`${r.name} snaps a ${drySnapped}-question dry spell`);
+  }
+  if (scored.length >= 2 && scored.every(r => r.points > 0)) outs.push('Clean sweep — everybody scored');
+  return outs.slice(0, 4);
+}
+
 function questionPayload(question, viewer, isHost) {
   const phase = question.phase;
   const choices = JSON.parse(question.choices);
@@ -202,8 +240,9 @@ function questionPayload(question, viewer, isHost) {
   const showAnswer = isHost || phase === 'results';
   const rows = q.answersFor.all(question.id);
   const mine = rows.find(r => r.player_id === viewer.id) || null;
-  // Didn't answer at all? Results stay hidden — same rule as history. Play it as a makeup instead.
-  if (phase === 'results' && !isHost && !mine) {
+  // Didn't answer at all? Results stay hidden — same rule as history. Play it as a makeup
+  // instead. (The TV spectator view is the shared screen, so it always shows results.)
+  if (phase === 'results' && !isHost && !viewer.spectator && !mine) {
     return { id: question.id, phase, locked: true };
   }
   return {
@@ -213,6 +252,7 @@ function questionPayload(question, viewer, isHost) {
     choices: showChoices ? choices : null,
     correctIndex: showAnswer ? question.correct_index : null,
     answer: showAnswer ? question.answer : null,
+    callouts: phase === 'results' ? buildCallouts(rows, question) : undefined,
     myAnswer: mine ? { guess: mine.guess, choiceIndex: mine.choice_index } : null,
     answers: rows.map(r => ({
       playerId: r.player_id,
@@ -268,7 +308,7 @@ function buildState(viewer) {
     question,
     drafts,
     todayScores,
-    makeups: round ? pendingMakeups(round, viewer).map(m => ({ id: m.id, date: m.date })) : [],
+    makeups: round && !viewer.spectator ? pendingMakeups(round, viewer).map(m => ({ id: m.id, date: m.date })) : [],
     deletedPlayers: isHost ? q.deletedPlayers.all() : undefined,
     importedPoints: isHost && round
       ? db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(points), 0) AS total FROM legacy_points WHERE round_id = ?').get(round.id)
@@ -332,7 +372,12 @@ function auth(req) {
   const url = new URL(req.url, 'http://x');
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || url.searchParams.get('token') || '';
   if (!token) return null;
-  return q.playerByToken.get(token) || null;
+  const player = q.playerByToken.get(token);
+  if (player) return player;
+  if (db.prepare('SELECT token FROM spectator_tokens WHERE token = ?').get(token)) {
+    return { id: -1, name: 'TV', emoji: '', spectator: true };
+  }
+  return null;
 }
 
 // ---------- game mutations ----------
@@ -414,6 +459,15 @@ route('POST', /^\/api\/verify$/, async (req, res) => {
   json(res, 200, { ok: true, players: q.allPlayers.all() });
 }, { public: true });
 
+// TV mode: password-only spectator token. Read-only live view for a shared screen.
+route('POST', /^\/api\/tv$/, async (req, res) => {
+  const body = await readBody(req);
+  if (body.password !== PASSWORD) return fail(res, 401, 'Wrong password');
+  const token = crypto.randomBytes(24).toString('hex');
+  db.prepare('INSERT INTO spectator_tokens (token) VALUES (?)').run(token);
+  json(res, 200, { token });
+}, { public: true });
+
 route('POST', /^\/api\/login$/, async (req, res) => {
   const body = await readBody(req);
   if (body.password !== PASSWORD) return fail(res, 401, 'Wrong password');
@@ -440,7 +494,7 @@ route('POST', /^\/api\/login$/, async (req, res) => {
 
 route('GET', /^\/api\/state$/, (req, res, player) => {
   json(res, 200, buildState(player));
-});
+}, { spectatorOk: true });
 
 route('GET', /^\/api\/events$/, (req, res) => {
   res.writeHead(200, {
@@ -451,7 +505,7 @@ route('GET', /^\/api\/events$/, (req, res) => {
   res.write(': connected\n\n');
   sseClients.add(res);
   req.on('close', () => sseClients.delete(res));
-});
+}, { spectatorOk: true });
 
 // Change your own bird avatar ('' goes back to initials).
 route('POST', /^\/api\/avatar$/, async (req, res, player) => {
@@ -973,6 +1027,7 @@ const server = http.createServer(async (req, res) => {
           if (!r.public) {
             player = auth(req);
             if (!player) return fail(res, 401, 'Not logged in');
+            if (player.spectator && !r.spectatorOk) return fail(res, 403, 'TV mode is view-only');
           }
           return await r.handler(req, res, player, m);
         }

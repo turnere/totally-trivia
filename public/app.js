@@ -2,8 +2,12 @@
 
 const $app = document.getElementById('app');
 
+// TV mode: /tv is a read-only, big-type live view for a shared screen.
+const IS_TV = location.pathname.replace(/\/+$/, '') === '/tv';
+if (IS_TV) document.body.classList.add('tv');
+
 const S = {
-  token: localStorage.getItem('tt_token') || null,
+  token: (IS_TV ? localStorage.getItem('tt_tv_token') : localStorage.getItem('tt_token')) || null,
   me: JSON.parse(localStorage.getItem('tt_me') || 'null'),
   view: 'game',              // game | history | stats
   game: null,                // /api/state payload
@@ -52,7 +56,7 @@ async function api(path, body, method) {
 }
 
 function logout() {
-  localStorage.removeItem('tt_token');
+  localStorage.removeItem(IS_TV ? 'tt_tv_token' : 'tt_token');
   localStorage.removeItem('tt_me');
   S.token = null; S.me = null; S.game = null; S.loginPlayers = null;
   if (S.sse) { S.sse.close(); S.sse = null; }
@@ -122,10 +126,19 @@ function confettiBurst(points) {
 }
 
 // Fire once per question when results land and I scored. Two-pointers get an encore.
+// The TV celebrates whenever anyone scored.
 function maybeCelebrate() {
   const qq = S.game && S.game.question;
   if (!qq || qq.phase !== 'results' || qq.locked || S.celebratedQ === qq.id) return;
   S.celebratedQ = qq.id;
+  if (IS_TV) {
+    const best = Math.max(0, ...(qq.answers || []).map(a => a.points || 0));
+    if (best > 0) {
+      confettiBurst(best);
+      if (best === 2) setTimeout(() => confettiBurst(2), 450);
+    }
+    return;
+  }
   const mine = (qq.answers || []).find(a => a.playerId === S.game.me.id);
   if (mine && mine.points > 0) {
     confettiBurst(mine.points);
@@ -157,11 +170,21 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Animations replay only when the question/phase actually changes, not on every
+// SSE refresh — track a phase key and mark the render "fresh" on transitions.
+function checkAnimFresh() {
+  const qq = S.game && S.game.question;
+  const key = qq ? `${qq.id}:${qq.phase}:${qq.locked ? 1 : 0}` : 'idle';
+  S.animFresh = key !== S.renderedPhaseKey;
+  S.renderedPhaseKey = key;
+}
+
 function render() {
   const focused = document.activeElement;
   const focusedId = focused && focused.id && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA') ? focused.id : null;
   const selStart = focusedId ? focused.selectionStart : 0;
 
+  if (IS_TV) { renderTV(); restoreFocus(focusedId, selStart); return; }
   if (!S.token) { $app.innerHTML = renderLogin(); restoreFocus(focusedId, selStart); return; }
   if (!S.game) { $app.innerHTML = '<div class="empty">Loading…</div>'; return; }
 
@@ -209,6 +232,106 @@ function setView(v) {
   if (v === 'history') { S.sessionDetail = null; S.makeup = null; loadHistory(); }
   if (v === 'stats') loadStats();
   render();
+}
+
+// ---------- TV mode ----------
+
+function renderTV() {
+  if (!S.token) {
+    $app.innerHTML = `<div class="login-wrap">
+      <h1>Totally Trivia</h1>
+      <p class="sub">TV mode — a live view for the big screen. Nobody plays from here.</p>
+      <div class="card">
+        <label for="pw">Team password</label>
+        <input type="password" id="pw" placeholder="password" onkeydown="if(event.key==='Enter')tvLogin()">
+        <div class="err">${esc(S.err.login || '')}</div>
+        <button class="primary big" style="width:100%" onclick="tvLogin()">Start the show</button>
+      </div>
+    </div>`;
+    return;
+  }
+  if (!S.game) { $app.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  checkAnimFresh();
+  const g = S.game;
+  const qq = g.question;
+  const main = !g.round
+    ? '<div class="card empty">No round yet — waiting for a host.</div>'
+    : !qq
+      ? tvIdle()
+      : ({ guessing: tvGuessing, reveal: tvReveal, choosing: tvChoosing, results: tvResults }[qq.phase] || tvIdle)(qq);
+  $app.innerHTML = `
+    <header>
+      <div class="logo">Totally <span>Trivia</span></div>
+      ${g.round ? `<div class="topic">${esc(g.round.topic)}</div>` : ''}
+      <div class="spacer"></div>
+      <div class="whoami muted">TV mode</div>
+    </header>
+    <div class="game-layout">
+      <div class="${S.animFresh ? 'anim' : ''}">${main}</div>
+      <div>${renderScoreboard()}</div>
+    </div>`;
+}
+
+async function tvLogin() {
+  try {
+    S.err.login = '';
+    const r = await api('/api/tv', { password: document.getElementById('pw').value });
+    S.token = r.token;
+    localStorage.setItem('tt_tv_token', r.token);
+    connectSSE();
+    await refresh();
+  } catch (e) { S.err.login = e.message; render(); }
+}
+
+function tvIdle() {
+  const g = S.game;
+  return `<div class="card empty" style="padding:60px 20px">
+    <div class="question-text" style="margin-bottom:8px">Waiting for ${esc(g.round.hostName)} to launch the next question</div>
+    ${typeof g.drafts?.count === 'number' && g.drafts.count > 0 ? `<p class="muted">${g.drafts.count} question${g.drafts.count > 1 ? 's' : ''} in the queue</p>` : ''}
+  </div>`;
+}
+
+function tvGuessing(qq) {
+  return `<div class="card">
+    <span class="phase-tag guessing">Guessing time — answers are hidden</span>
+    <div class="question-text">${esc(qq.text)}</div>
+    ${playerChips(qq, a => a.hasGuess, 'guesses in')}
+  </div>`;
+}
+
+function tvReveal(qq) {
+  return `<div class="card">
+    <span class="phase-tag reveal">The reveal</span>
+    <div class="question-text">${esc(qq.text)}</div>
+    ${qq.answers.filter(a => a.hasGuess).length ? `<div class="guess-grid">
+      ${qq.answers.filter(a => a.hasGuess).map(a => `
+        <div class="guess-card ${a.guessCorrect === true ? 'right' : ''}">
+          <div class="who">${avatar(a.name, a.emoji)} ${esc(a.name)}</div>
+          <div class="what">${a.guess === '' ? '<span class="muted">(passed)</span>' : esc(a.guess)}</div>
+        </div>`).join('')}
+    </div>` : '<p class="muted">Nobody guessed. Tough crowd.</p>'}
+  </div>`;
+}
+
+function tvChoosing(qq) {
+  return `<div class="card">
+    <span class="phase-tag choosing">Multiple choice — stick with your guess for 2</span>
+    <div class="question-text">${esc(qq.text)}</div>
+    <div class="choices">
+      ${qq.choices.map((c, i) => `<button class="static"><span class="letter">${'ABCD'[i] || i + 1}</span> ${esc(c)}</button>`).join('')}
+    </div>
+    ${playerChips(qq, a => a.hasChoice, 'locked in')}
+  </div>`;
+}
+
+function tvResults(qq) {
+  return `<div class="card">
+    <span class="phase-tag results">Results</span>
+    <div class="question-text">${esc(qq.text)}</div>
+    <div class="answer-banner">Answer: <b>${esc(qq.answer)}</b></div>
+    ${callouts(qq)}
+    ${resultsTable(qq, false)}
+  </div>`;
 }
 
 // ---------- login ----------
@@ -285,13 +408,14 @@ function renderGame() {
   if (!g.round) return renderNoRound();
 
   // A question in results is over: lead with "what's next", recap the results below.
+  checkAnimFresh();
   const qq = g.question;
   const inResults = qq && qq.phase === 'results';
   const live = qq && !inResults ? renderQuestion() : '';
   const between = !qq || inResults ? renderBetweenQuestions() : '';
   const recent = inResults ? (qq.locked ? renderLockedResults(qq, true) : renderResults(qq, true)) : '';
   return `<div class="game-layout">
-    <div>${live}${between}${g.isHost ? renderHostTools() : ''}${recent}</div>
+    <div class="${S.animFresh ? 'anim' : ''}">${live}${between}${g.isHost ? renderHostTools() : ''}${recent}</div>
     <div>${renderScoreboard()}${renderMakeupsCard()}</div>
   </div>`;
 }
@@ -480,11 +604,17 @@ function resultsTable(qq, canJudge) {
   ${covered.length ? `<p class="small muted mt">Played before the app (covered by imported points): ${covered.map(c => esc(c.name)).join(', ')}.</p>` : ''}`;
 }
 
+function callouts(qq) {
+  if (!qq.callouts || !qq.callouts.length) return '';
+  return `<div class="callouts">${qq.callouts.map(c => `<div class="callout">${esc(c)}</div>`).join('')}</div>`;
+}
+
 function renderResults(qq, recent) {
   return `<div class="card">
     <span class="phase-tag results">${recent ? 'Last question' : 'Results'}</span>
     <div class="question-text">${esc(qq.text)}</div>
     <div class="answer-banner">Answer: <b>${esc(qq.answer)}</b></div>
+    ${callouts(qq)}
     ${resultsTable(qq, S.game.isHost)}
     ${S.game.isHost ? `<div class="mt row">
       <span class="small muted grow">Wrong call on a guess? Hit “flip” — points recalculate.</span>
@@ -899,7 +1029,7 @@ Object.assign(window, {
   startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice, forfeitQ,
   setStatsRound, passGuess, removeQ, recallQ, deletePlayer, restorePlayer, playMakeup, setMyBird,
-  importPoints, clearImports, S, render,
+  importPoints, clearImports, tvLogin, S, render,
 });
 
 if (S.token) { connectSSE(); refresh(); }

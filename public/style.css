@@ -280,6 +280,80 @@ table.stats tr:first-child td { font-weight: 700; }
 
 .confetti-canvas { position: fixed; inset: 0; pointer-events: none; z-index: 100; }
 
+/* ---------- transitions & reveal drama ----------
+   .anim is applied only on a fresh phase change, so animations don't replay
+   on every live refresh. */
+
+@keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes popIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
+@keyframes flipIn { from { opacity: 0; transform: perspective(600px) rotateX(88deg); } to { opacity: 1; transform: perspective(600px) none; } }
+@keyframes rowIn { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+
+.anim .card { animation: fadeUp 0.4s both; }
+.anim .question-text { animation: fadeUp 0.45s 0.05s both; }
+
+/* the reveal: guesses flip over one at a time */
+.anim .guess-grid .guess-card { animation: flipIn 0.55s cubic-bezier(0.2, 0.7, 0.3, 1.05) both; transform-origin: 50% 0; }
+.anim .guess-grid .guess-card:nth-child(1) { animation-delay: 0.2s; }
+.anim .guess-grid .guess-card:nth-child(2) { animation-delay: 0.55s; }
+.anim .guess-grid .guess-card:nth-child(3) { animation-delay: 0.9s; }
+.anim .guess-grid .guess-card:nth-child(4) { animation-delay: 1.25s; }
+.anim .guess-grid .guess-card:nth-child(5) { animation-delay: 1.6s; }
+.anim .guess-grid .guess-card:nth-child(6) { animation-delay: 1.95s; }
+.anim .guess-grid .guess-card:nth-child(7) { animation-delay: 2.3s; }
+.anim .guess-grid .guess-card:nth-child(8) { animation-delay: 2.65s; }
+.anim .guess-grid .guess-card:nth-child(n+9) { animation-delay: 3s; }
+
+.anim .choices button { animation: fadeUp 0.4s both; }
+.anim .choices button:nth-child(1) { animation-delay: 0.1s; }
+.anim .choices button:nth-child(2) { animation-delay: 0.18s; }
+.anim .choices button:nth-child(3) { animation-delay: 0.26s; }
+.anim .choices button:nth-child(4) { animation-delay: 0.34s; }
+.anim .choices button:nth-child(5) { animation-delay: 0.42s; }
+
+.anim .answer-banner { animation: popIn 0.5s cubic-bezier(0.2, 0.8, 0.3, 1.15) 0.15s both; }
+.anim table.results tr { animation: rowIn 0.35s both; }
+.anim table.results tr:nth-child(2) { animation-delay: 0.35s; }
+.anim table.results tr:nth-child(3) { animation-delay: 0.45s; }
+.anim table.results tr:nth-child(4) { animation-delay: 0.55s; }
+.anim table.results tr:nth-child(5) { animation-delay: 0.65s; }
+.anim table.results tr:nth-child(6) { animation-delay: 0.75s; }
+.anim table.results tr:nth-child(7) { animation-delay: 0.85s; }
+.anim table.results tr:nth-child(n+8) { animation-delay: 0.95s; }
+
+.callouts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.callout {
+  background: var(--gold-soft); color: #6b5606; border: 1px solid #ecd684;
+  padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: 0.92rem;
+}
+.anim .callout { animation: popIn 0.45s both; }
+.anim .callout:nth-child(1) { animation-delay: 0.8s; }
+.anim .callout:nth-child(2) { animation-delay: 1s; }
+.anim .callout:nth-child(3) { animation-delay: 1.2s; }
+.anim .callout:nth-child(4) { animation-delay: 1.4s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .anim .card, .anim .question-text, .anim .guess-grid .guess-card, .anim .choices button,
+  .anim .answer-banner, .anim table.results tr, .anim .callout { animation: none; }
+}
+
+/* ---------- TV mode ---------- */
+
+body.tv #app { max-width: 1500px; }
+body.tv .question-text { font-size: 2.4rem; }
+body.tv .phase-tag { font-size: 1rem; }
+body.tv .guess-card .what { font-size: 1.6rem; }
+body.tv .guess-card .who { font-size: 1rem; }
+body.tv .chip { font-size: 1.15rem; padding: 8px 18px; }
+body.tv .choices button { font-size: 1.5rem; padding: 22px; }
+body.tv .answer-banner { font-size: 1.7rem; }
+body.tv table.results { font-size: 1.25rem; }
+body.tv .callout { font-size: 1.2rem; padding: 9px 20px; }
+body.tv .scoreboard li { font-size: 1.25rem; padding: 10px 4px; }
+body.tv .card h2 { font-size: 1.3rem; }
+body.tv .av, body.tv .av-img { width: 30px; height: 30px; }
+body.tv .parrot { width: 30px; height: 30px; }
+
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: #fff; padding: 10px 20px; border-radius: 10px;
