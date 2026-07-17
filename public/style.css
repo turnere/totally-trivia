@@ -240,7 +240,7 @@ table.results tr:last-child td { border-bottom: none; }
   margin-bottom: 8px; display: flex; gap: 10px; align-items: center;
 }
 .draft-item .q { flex: 1; }
-.draft-item .q .a { color: var(--accent); font-size: 0.85rem; font-weight: 600; }
+.draft-item .q .a { color: var(--muted); font-size: 0.82rem; font-weight: 500; }
 
 details.host-tools { margin-top: 8px; }
 details.host-tools summary { cursor: pointer; color: var(--muted); font-size: 0.88rem; font-weight: 600; }

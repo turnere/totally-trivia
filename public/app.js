@@ -644,7 +644,7 @@ function renderHostTools() {
     <h2>Host desk</h2>
     ${drafts.length ? `<h3>Question queue</h3>
       ${drafts.map(d => `<div class="draft-item">
-        <div class="q">${esc(d.text)}<div class="a">→ ${esc(d.answer)}</div></div>
+        <div class="q">${esc(d.text)}<div class="a muted small">answer hidden — Edit to view</div></div>
         <button class="primary" ${inQuestion && g.question.phase !== 'results' ? 'disabled title="Finish the current question first"' : ''}
           onclick="startQ(${d.id})">Ask it</button>
         <button onclick="editDraft(${d.id})">Edit</button>
