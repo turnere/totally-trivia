@@ -163,6 +163,10 @@ nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent
 .chip.done { background: var(--accent-soft); border-color: var(--accent); }
 .chip .tick { color: var(--accent); font-weight: 800; }
 
+.presdot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; background: #dcdcdc; }
+.presdot.on { background: #2fa066; }
+.presdot.idle { background: #e8c33c; }
+
 .guess-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .guess-card {
   border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 14px;

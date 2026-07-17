@@ -269,7 +269,7 @@ function renderTV() {
     </header>
     <div class="game-layout">
       <div class="${S.animFresh ? 'anim' : ''}">${main}</div>
-      <div>${renderScoreboard()}</div>
+      <div>${renderScoreboard()}${renderPresenceCard()}</div>
     </div>`;
 }
 
@@ -417,7 +417,32 @@ function renderGame() {
   const recent = inResults ? (qq.locked ? renderLockedResults(qq, true) : renderResults(qq, true)) : '';
   return `<div class="game-layout">
     <div class="${S.animFresh ? 'anim' : ''}">${live}${between}${g.isHost ? renderHostTools() : ''}${recent}</div>
-    <div>${renderScoreboard()}${renderMakeupsCard()}</div>
+    <div>${renderScoreboard()}${renderPresenceCard()}${renderMakeupsCard()}</div>
+  </div>`;
+}
+
+function presenceOf(id) {
+  const pr = S.game.presence || {};
+  const online = (pr.online || []).includes(id);
+  const active = (pr.active || []).includes(id);
+  if (active) return 'on';
+  if (online) return 'idle';
+  return 'off';
+}
+
+function renderPresenceCard() {
+  const g = S.game;
+  if (!g.players.length) return '';
+  return `<div class="card">
+    <h2>Who's here</h2>
+    <ul class="scoreboard">
+      ${g.players.map(p => {
+        const st = presenceOf(p.id);
+        return `<li>${avatar(p.name, p.emoji)} ${esc(p.name)}
+          <span class="presdot ${st}" style="margin-left:auto" title="${st === 'on' ? 'here and active' : st === 'idle' ? 'connected, idle' : 'offline'}"></span></li>`;
+      }).join('')}
+    </ul>
+    ${g.presence && g.presence.tv ? '<p class="small muted mt">TV screen connected</p>' : ''}
   </div>`;
 }
 
@@ -517,7 +542,7 @@ function playerChips(qq, doneFn, verb) {
     ${S.game.players.filter(p => p.id !== S.game.round.hostId).map(p => {
       const a = qq.answers.find(x => x.playerId === p.id);
       const done = a && doneFn(a);
-      return `<span class="chip ${done ? 'done' : ''}">${avatar(p.name, p.emoji)} ${esc(p.name)} ${done ? '<span class="tick">✓</span>' : ''}</span>`;
+      return `<span class="chip ${done ? 'done' : ''}">${avatar(p.name, p.emoji)} ${esc(p.name)} <span class="presdot ${presenceOf(p.id)}"></span> ${done ? '<span class="tick">✓</span>' : ''}</span>`;
     }).join('')}
   </div>
   <p class="small muted mt">${qq.answers.filter(doneFn).length} ${verb}</p>`;

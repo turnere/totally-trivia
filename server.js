@@ -172,18 +172,22 @@ const q = {
 
 // ---------- SSE ----------
 
-const sseClients = new Set();
+const sseClients = new Set(); // entries: { res, playerId } (-1 = TV spectator)
+const lastSeen = new Map();   // playerId -> ms timestamp of their last API request
+
 function broadcast() {
   const msg = `data: ${Date.now()}\n\n`;
-  for (const res of sseClients) {
-    try { res.write(msg); } catch { sseClients.delete(res); }
+  for (const c of sseClients) {
+    try { c.res.write(msg); } catch { sseClients.delete(c); }
   }
 }
 setInterval(() => {
-  for (const res of sseClients) {
-    try { res.write(': ping\n\n'); } catch { sseClients.delete(res); }
+  for (const c of sseClients) {
+    try { c.res.write(': ping\n\n'); } catch { sseClients.delete(c); }
   }
 }, 25000);
+// Nudge clients periodically so idle/active presence dots stay current.
+setInterval(broadcast, 60000);
 
 // ---------- state assembly ----------
 
@@ -316,6 +320,11 @@ function buildState(viewer) {
     importedPoints: isHost && round
       ? db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(points), 0) AS total FROM legacy_points WHERE round_id = ?').get(round.id)
       : undefined,
+    presence: {
+      online: [...new Set([...sseClients].map(c => c.playerId).filter(id => id > 0))],
+      active: [...lastSeen.entries()].filter(([, t]) => Date.now() - t < 120000).map(([id]) => id),
+      tv: [...sseClients].some(c => c.playerId === -1),
+    },
   };
 }
 
@@ -377,7 +386,10 @@ function auth(req) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || url.searchParams.get('token') || '';
   if (!token) return null;
   const player = q.playerByToken.get(token);
-  if (player) return player;
+  if (player) {
+    lastSeen.set(player.id, Date.now());
+    return player;
+  }
   if (db.prepare('SELECT token FROM spectator_tokens WHERE token = ?').get(token)) {
     return { id: -1, name: 'TV', emoji: '', spectator: true };
   }
@@ -500,15 +512,17 @@ route('GET', /^\/api\/state$/, (req, res, player) => {
   json(res, 200, buildState(player));
 }, { spectatorOk: true });
 
-route('GET', /^\/api\/events$/, (req, res) => {
+route('GET', /^\/api\/events$/, (req, res, player) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
   });
   res.write(': connected\n\n');
-  sseClients.add(res);
-  req.on('close', () => sseClients.delete(res));
+  const entry = { res, playerId: player.id };
+  sseClients.add(entry);
+  broadcast();
+  req.on('close', () => { sseClients.delete(entry); broadcast(); });
 }, { spectatorOk: true });
 
 // Change your own bird avatar ('' goes back to initials).
