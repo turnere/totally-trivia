@@ -192,7 +192,10 @@ setInterval(() => {
 function pendingMakeups(round, viewer) {
   if (!round || round.host_id === viewer.id) return [];
   return db.prepare(`
-    SELECT qq.id, s.date FROM questions qq JOIN sessions s ON s.id = qq.session_id
+    SELECT qq.id, s.date,
+      (SELECT COUNT(*) FROM questions q2 WHERE q2.session_id = qq.session_id AND q2.deleted = 0 AND q2.phase != 'draft'
+        AND (q2.asked_at < qq.asked_at OR (q2.asked_at = qq.asked_at AND q2.id <= qq.id))) AS qnum
+    FROM questions qq JOIN sessions s ON s.id = qq.session_id
     WHERE qq.round_id = ? AND qq.deleted = 0 AND qq.phase IN ('results','closed')
       AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id = qq.id AND a.player_id = ? AND a.finalized = 1)
       AND NOT (qq.historical = 1 AND EXISTS (SELECT 1 FROM legacy_points lp WHERE lp.player_id = ? AND lp.date = s.date))
@@ -308,7 +311,7 @@ function buildState(viewer) {
     question,
     drafts,
     todayScores,
-    makeups: round && !viewer.spectator ? pendingMakeups(round, viewer).map(m => ({ id: m.id, date: m.date })) : [],
+    makeups: round && !viewer.spectator ? pendingMakeups(round, viewer).map(m => ({ id: m.id, date: m.date, qnum: m.qnum })) : [],
     deletedPlayers: isHost ? q.deletedPlayers.all() : undefined,
     importedPoints: isHost && round
       ? db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(points), 0) AS total FROM legacy_points WHERE round_id = ?').get(round.id)

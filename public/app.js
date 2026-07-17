@@ -424,15 +424,11 @@ function renderGame() {
 function renderMakeupsCard() {
   const list = S.game.makeups || [];
   if (!list.length) return '';
-  const counts = {};
   return `<div class="card">
     <h2>Your makeups (${list.length})</h2>
     <p class="small muted">Questions you missed in ${esc(S.game.round.topic)}. Their answers stay hidden until you play them.</p>
     <ul class="scoreboard">
-      ${list.map(m => {
-        counts[m.date] = (counts[m.date] || 0) + 1;
-        return `<li>${esc(m.date)} · missed #${counts[m.date]}<span style="margin-left:auto"><button onclick="playMakeup(${m.id})">Play</button></span></li>`;
-      }).join('')}
+      ${list.map(m => `<li>${esc(m.date)} · Question ${m.qnum}<span style="margin-left:auto"><button onclick="playMakeup(${m.id})">Play</button></span></li>`).join('')}
     </ul>
   </div>`;
 }
@@ -618,7 +614,7 @@ function resultsTable(qq, canJudge) {
     ${covered.map(p => `<tr>
       <td>${avatar(p.name, p.emoji)} ${esc(p.name)} <span class="badge">pre-app</span></td>
       <td colspan="2"><span class="muted">played before the app</span></td>
-      <td><span class="pts ${p.points >= 2 ? 'two' : p.points ? 'one' : 'zero'}">+${p.points}</span>
+      <td><span class="pts ${p.points >= 2 ? 'two' : p.points ? 'one' : 'zero'}">+${p.points}</span>${'<img src="/parrot.gif" class="parrot" alt="party parrot">'.repeat(Math.min(p.points, 4))}
         <span class="muted small">that day</span></td>
     </tr>`).join('')}
     ${missed.map(p => `<tr>
@@ -895,7 +891,7 @@ function renderHistory() {
           : `<li>${esc(qq.text)}</li>`).join('')}
       </ol>` : ''}
       ${s.points.length ? `<div class="waiting-list">
-        ${s.points.map(p => `<span class="chip">${avatar(p.name, p.emoji)} ${esc(p.name)} <b class="daypts">+${p.points}</b></span>`).join('')}
+        ${s.points.map(p => `<span class="chip">${avatar(p.name, p.emoji)} ${esc(p.name)} <b class="daypts">+${p.points}</b>${'<img src="/parrot.gif" class="parrot" alt="party parrot">'.repeat(Math.min(p.points, 4))}</span>`).join('')}
       </div>` : '<p class="muted small">No points recorded this day.</p>'}
       ${s.pending.length ? `<p class="small muted mt">Needs makeup: ${s.pending.map(n => esc(n)).join(', ')}</p>` : ''}
     </div>`).join('') : '<p class="muted small">No games in this round yet.</p>'}
