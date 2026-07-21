@@ -88,6 +88,52 @@ async function refresh() {
 }
 window.addEventListener('focus', refresh);
 
+// ---------- bird background (VANTA.BIRDS, login screen only) ----------
+
+let birdBgEffect = null;
+// Enabled by default; remembers the user's choice (per-browser) once they toggle it.
+let birdsEnabled = localStorage.getItem('tt_birds') !== 'off';
+
+function ensureBirdBg(wantOn) {
+  const on = wantOn && birdsEnabled;
+  if (on && !birdBgEffect && window.VANTA && window.VANTA.BIRDS) {
+    birdBgEffect = window.VANTA.BIRDS({
+      el: '#bird-bg',
+      mouseControls: true,
+      touchControls: true,
+      gyroControls: false,
+      minHeight: 200.0,
+      minWidth: 200.0,
+      scale: 1.0,
+      scaleMobile: 1.0,
+      backgroundColor: 0xeceded,
+      color1: 0xe7fed,
+      color2: 0xff1010,
+      colorMode: 'lerp',
+      speedLimit: 7.0,
+    });
+    document.body.classList.add('has-bird-bg');
+  } else if (!on && birdBgEffect) {
+    birdBgEffect.destroy();
+    birdBgEffect = null;
+    document.body.classList.remove('has-bird-bg');
+  }
+}
+
+function syncBirdToggleBtn() {
+  const btn = document.getElementById('bird-toggle');
+  if (!btn) return;
+  btn.textContent = birdsEnabled ? 'Birds: on' : 'Birds: off';
+  btn.classList.toggle('off', !birdsEnabled);
+}
+
+function toggleBirds() {
+  birdsEnabled = !birdsEnabled;
+  localStorage.setItem('tt_birds', birdsEnabled ? 'on' : 'off');
+  syncBirdToggleBtn();
+  render(); // re-render re-requests the birds; ensureBirdBg now honors the new preference
+}
+
 // ---------- confetti ----------
 
 function confettiBurst(points) {
@@ -186,10 +232,20 @@ function render() {
   const selStart = focusedId ? focused.selectionStart : 0;
 
   if (IS_TV) { renderTV(); restoreFocus(focusedId, selStart); return; }
-  if (!S.token) { $app.innerHTML = renderLogin(); restoreFocus(focusedId, selStart); return; }
+  ensureBirdBg(true); // the flock flies on every screen now
+  if (!S.token) {
+    $app.innerHTML = renderLogin();
+    document.body.classList.remove('spotlight');
+    restoreFocus(focusedId, selStart);
+    return;
+  }
   if (!S.game) { $app.innerHTML = '<div class="empty">Loading…</div>'; return; }
 
   const g = S.game;
+  // Spotlight is a layout choice (center the live question, hide the sidebar) — independent
+  // of the birds, which are always on now.
+  const spotlight = S.view === 'game' && !!g.question && g.question.phase === 'guessing' && !g.question.locked;
+  document.body.classList.toggle('spotlight', spotlight);
   $app.innerHTML = `
     <header>
       <div class="logo">Totally <span>Trivia</span></div>
@@ -238,6 +294,7 @@ function setView(v) {
 // ---------- TV mode ----------
 
 function renderTV() {
+  ensureBirdBg(true); // the flock flies on every screen now
   if (!S.token) {
     $app.innerHTML = `<div class="login-wrap">
       <h1>Totally Trivia</h1>
@@ -408,9 +465,16 @@ function renderGame() {
   const g = S.game;
   if (!g.round) return renderNoRound();
 
-  // A question in results is over: lead with "what's next", recap the results below.
   checkAnimFresh();
   const qq = g.question;
+
+  // The moment a question starts: just the question, centered, birds behind it.
+  // Everything else (scoreboard, host desk) steps aside until the reveal.
+  if (qq && qq.phase === 'guessing' && !qq.locked) {
+    return `<div class="spotlight-stage ${S.animFresh ? 'anim' : ''}">${renderGuessing(qq)}</div>`;
+  }
+
+  // A question in results is over: lead with "what's next", recap the results below.
   const inResults = qq && qq.phase === 'results';
   const live = qq && !inResults ? renderQuestion() : '';
   const between = !qq || inResults ? renderBetweenQuestions() : '';
@@ -1129,6 +1193,9 @@ Object.assign(window, {
   restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, deputyStart, deputyAdv,
   S, render,
 });
+
+const birdToggleBtn = document.getElementById('bird-toggle');
+if (birdToggleBtn) { birdToggleBtn.onclick = toggleBirds; syncBirdToggleBtn(); }
 
 if (S.token) { connectSSE(); refresh(); }
 render();

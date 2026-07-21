@@ -1,6 +1,6 @@
 /* Brand palette: 444444 / 797575 / FFBAB9 / FF5050 / FFCC01 / 3574E3 / 3D4FD7 / 1B24A2 / 050039 */
 :root {
-  --bg: #ffffff;
+  --bg: #eceded;
   --card: #ffffff;
   --ink: #444444;
   --muted: #797575;
@@ -28,7 +28,51 @@ body {
   min-height: 100vh;
 }
 
-#app { max-width: 1060px; margin: 0 auto; padding: 16px 20px 60px; }
+#bird-bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+
+#bird-toggle {
+  position: fixed; bottom: 16px; right: 16px; z-index: 10;
+  font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.92); color: var(--ink);
+  backdrop-filter: blur(3px); box-shadow: var(--shadow);
+}
+#bird-toggle:hover { border-color: var(--accent); color: var(--accent); }
+#bird-toggle.off { color: var(--muted); }
+#bird-toggle.off:hover { border-color: var(--muted); color: var(--ink); }
+#app { position: relative; z-index: 1; max-width: 1060px; margin: 0 auto; padding: 16px 20px 60px; }
+
+/* Cards and chrome need to stay readable over the flock, which now flies on every page */
+body.has-bird-bg .card {
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(3px);
+}
+body.has-bird-bg header,
+body.has-bird-bg nav.tabs {
+  background: rgba(236, 237, 237, 0.95);
+  backdrop-filter: blur(3px);
+}
+body.has-bird-bg header { border-radius: 12px; padding-left: 10px; padding-right: 10px; }
+body.has-bird-bg .login-wrap h1,
+body.has-bird-bg .login-wrap .sub {
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 10px;
+  padding: 4px 10px;
+  backdrop-filter: blur(3px);
+}
+
+/* Spotlight: the moment a question starts, it's the only thing on stage */
+.spotlight-stage {
+  min-height: calc(100vh - 200px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 0;
+}
+.spotlight-stage .card {
+  width: 100%;
+  max-width: 640px;
+}
 
 button {
   font: inherit;
