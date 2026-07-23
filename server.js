@@ -1150,7 +1150,8 @@ route('GET', /^\/api\/stats$/, (req, res) => {
     if (r.points === 2) s.twoPointers += 1;
     if (r.is_makeup) s.makeups += 1;
   }
-  // Backdated questions covered by imported points count as played (pre-app plays).
+  // Backdated questions covered by imported points exempt a player from owing them — they
+  // really did play, just before the app existed.
   let coveredRows = db.prepare(`
     SELECT DISTINCT lp.player_id, qq.id AS qid, qq.round_id, s.date
     FROM questions qq
@@ -1160,8 +1161,14 @@ route('GET', /^\/api\/stats$/, (req, res) => {
   if (roundId && roundId !== 'all') coveredRows = coveredRows.filter(r => r.round_id === Number(roundId));
   if (from) coveredRows = coveredRows.filter(r => r.date >= from);
   if (to) coveredRows = coveredRows.filter(r => r.date <= to);
-  for (const c of coveredRows) {
-    const s = byPlayer.get(c.player_id);
+  // "Played" counts every distinct imported day, whether or not a matching backdated
+  // question has been recreated in the app yet — the import itself is the record they played.
+  let importedDays = db.prepare('SELECT DISTINCT player_id, round_id, date FROM legacy_points').all();
+  if (roundId && roundId !== 'all') importedDays = importedDays.filter(r => r.round_id === Number(roundId));
+  if (from) importedDays = importedDays.filter(r => r.date >= from);
+  if (to) importedDays = importedDays.filter(r => r.date <= to);
+  for (const d of importedDays) {
+    const s = byPlayer.get(d.player_id);
     if (s) s.played += 1;
   }
   // Outstanding makeups: finished questions in scope with no finalized answer and no coverage.
