@@ -58,13 +58,6 @@ CREATE TABLE IF NOT EXISTS questions (
   asked_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE TABLE IF NOT EXISTS absences (
-  id INTEGER PRIMARY KEY,
-  player_id INTEGER NOT NULL REFERENCES players(id),
-  date TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(player_id, date)
-);
 CREATE TABLE IF NOT EXISTS legacy_points (
   id INTEGER PRIMARY KEY,
   round_id INTEGER REFERENCES rounds(id),
@@ -93,6 +86,7 @@ for (const stmt of [
   'ALTER TABLE players ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE questions ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE questions ADD COLUMN historical INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE questions ADD COLUMN scheduled_for TEXT',
 ]) {
   try { db.exec(stmt); } catch { /* column already exists */ }
 }
@@ -170,7 +164,10 @@ const q = {
                            WHERE r.status = 'active' ORDER BY r.id`),
   openSession: db.prepare(`SELECT * FROM sessions WHERE round_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`),
   currentQuestion: db.prepare(`SELECT * FROM questions WHERE session_id = ? AND deleted = 0 AND phase IN ('guessing','reveal','choosing','results') ORDER BY id LIMIT 1`),
-  drafts: db.prepare(`SELECT * FROM questions WHERE round_id = ? AND phase = 'draft' ORDER BY id`),
+  // Questions scheduled for today-or-earlier surface first (so whoever's around has the
+  // right one ready); undated questions keep normal queue order; future-dated ones wait.
+  drafts: db.prepare(`SELECT * FROM questions WHERE round_id = ? AND phase = 'draft'
+                       ORDER BY (scheduled_for IS NOT NULL AND scheduled_for > ?), id`),
   question: db.prepare('SELECT * FROM questions WHERE id = ?'),
   answersFor: db.prepare(`SELECT a.*, p.name, p.emoji FROM answers a JOIN players p ON p.id = a.player_id WHERE a.question_id = ? AND p.deleted = 0 ORDER BY p.name`),
   myAnswer: db.prepare('SELECT * FROM answers WHERE question_id = ? AND player_id = ?'),
@@ -308,9 +305,9 @@ function buildRoundState(round, viewer) {
       .sort((a, b) => b.points - a.points);
     session.questionsAsked = qs.filter(x => x.phase !== 'draft').length;
   }
-  const d = q.drafts.all(round.id);
+  const d = q.drafts.all(round.id, todayStr());
   const drafts = isHost
-    ? d.map(x => ({ id: x.id, text: x.text, answer: x.answer, choices: JSON.parse(x.choices), correctIndex: x.correct_index }))
+    ? d.map(x => ({ id: x.id, text: x.text, answer: x.answer, choices: JSON.parse(x.choices), correctIndex: x.correct_index, scheduledFor: x.scheduled_for }))
     : { count: d.length };
   return {
     id: round.id, topic: round.topic, hostId: round.host_id, hostName: round.host_name, hostEmoji: round.host_emoji,
@@ -323,7 +320,6 @@ function buildRoundState(round, viewer) {
     importedPoints: isHost
       ? db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(points), 0) AS total FROM legacy_points WHERE round_id = ?').get(round.id)
       : undefined,
-    hostOutToday: !!db.prepare('SELECT 1 FROM absences WHERE player_id = ? AND date = ?').get(round.host_id, todayStr()),
   };
 }
 
@@ -336,11 +332,6 @@ function buildState(viewer) {
     players: q.allPlayers.all(),
     rounds,
     deletedPlayers: isHost ? q.deletedPlayers.all() : undefined,
-    upcomingAbsences: db.prepare(`
-      SELECT a.id, a.player_id AS playerId, a.date, p.name, p.emoji FROM absences a
-      JOIN players p ON p.id = a.player_id
-      WHERE a.date >= ? AND p.deleted = 0
-      ORDER BY a.date, p.name`).all(todayStr()),
     presence: {
       online: [...new Set([...sseClients].map(c => c.playerId).filter(id => id > 0))],
       active: [...lastSeen.entries()].filter(([, t]) => Date.now() - t < 120000).map(([id]) => id),
@@ -556,34 +547,6 @@ route('POST', /^\/api\/avatar$/, async (req, res, player) => {
   json(res, 200, { ok: true });
 });
 
-// Schedule upcoming days you know you'll be out — visible to the whole team ahead of time,
-// so a host away that day is expected (deputy mode) rather than a surprise.
-route('POST', /^\/api\/absence$/, async (req, res, player) => {
-  const body = await readBody(req);
-  const from = parseImportDate(body.from || '');
-  const to = body.to ? parseImportDate(body.to) : from;
-  if (!from || !to) return fail(res, 400, 'Bad date (use YYYY-MM-DD or M/D/YYYY)');
-  if (to < from) return fail(res, 400, '"To" is before "from"');
-  if (from < todayStr()) return fail(res, 400, "Can't schedule a day that's already passed");
-  const days = [];
-  for (let d = new Date(`${from}T00:00:00`); d <= new Date(`${to}T00:00:00`); d.setDate(d.getDate() + 1)) {
-    days.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-  }
-  if (days.length > 60) return fail(res, 400, 'That range is too long (max 60 days)');
-  const ins = db.prepare('INSERT OR IGNORE INTO absences (player_id, date) VALUES (?, ?)');
-  for (const d of days) ins.run(player.id, d);
-  broadcast();
-  json(res, 200, { ok: true, added: days.length });
-});
-
-route('POST', /^\/api\/absence\/(\d+)\/cancel$/, async (req, res, player, m) => {
-  const row = db.prepare('SELECT * FROM absences WHERE id = ?').get(Number(m[1]));
-  if (!row || row.player_id !== player.id) return fail(res, 404, 'No such absence');
-  db.prepare('DELETE FROM absences WHERE id = ?').run(row.id);
-  broadcast();
-  json(res, 200, { ok: true });
-});
-
 // --- playing (live) ---
 
 route('POST', /^\/api\/guess$/, async (req, res, player) => {
@@ -718,8 +681,13 @@ route('POST', /^\/api\/host\/question$/, async (req, res, player) => {
     broadcast();
     return json(res, 200, { ok: true, backdated: date });
   }
-  db.prepare('INSERT INTO questions (round_id, text, answer, choices, correct_index) VALUES (?, ?, ?, ?, ?)')
-    .run(round.id, parsed.text, parsed.answer, JSON.stringify(choices), correctIndex);
+  let scheduledFor = null;
+  if (body.scheduledFor) {
+    scheduledFor = parseImportDate(body.scheduledFor);
+    if (!scheduledFor) return fail(res, 400, 'Bad scheduled date (use YYYY-MM-DD or M/D/YYYY)');
+  }
+  db.prepare('INSERT INTO questions (round_id, text, answer, choices, correct_index, scheduled_for) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(round.id, parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, scheduledFor);
   broadcast();
   json(res, 200, { ok: true });
 });
@@ -749,8 +717,13 @@ route('POST', /^\/api\/host\/question\/(\d+)\/update$/, async (req, res, player,
     broadcast();
     return json(res, 200, { ok: true, backdated: date });
   }
-  db.prepare('UPDATE questions SET text = ?, answer = ?, choices = ?, correct_index = ? WHERE id = ?')
-    .run(parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, question.id);
+  let scheduledFor = null;
+  if (body.scheduledFor) {
+    scheduledFor = parseImportDate(body.scheduledFor);
+    if (!scheduledFor) return fail(res, 400, 'Bad scheduled date (use YYYY-MM-DD or M/D/YYYY)');
+  }
+  db.prepare('UPDATE questions SET text = ?, answer = ?, choices = ?, correct_index = ?, scheduled_for = ? WHERE id = ?')
+    .run(parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, scheduledFor, question.id);
   broadcast();
   json(res, 200, { ok: true });
 });

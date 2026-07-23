@@ -269,10 +269,10 @@ function render() {
     </header>
     ${S.showBirdPicker ? renderBirdPicker() : ''}
     <nav class="tabs">
-      ${['game', 'history', 'stats'].map(v =>
-        `<button class="${S.view === v ? 'active' : ''}" onclick="setView('${v}')">${{ game: 'Play', history: 'History', stats: 'Stats' }[v]}</button>`).join('')}
+      ${['game', 'history', 'stats', ...(g.isHost ? ['manage'] : [])].map(v =>
+        `<button class="${S.view === v ? 'active' : ''}" onclick="setView('${v}')">${{ game: 'Play', history: 'History', stats: 'Stats', manage: 'Manage' }[v]}</button>`).join('')}
     </nav>
-    ${S.view === 'game' ? renderGame() : S.view === 'history' ? renderHistory() : renderStats()}
+    ${S.view === 'game' ? renderGame() : S.view === 'history' ? renderHistory() : S.view === 'stats' ? renderStats() : renderManageTab()}
   `;
   restoreFocus(focusedId, selStart);
 }
@@ -505,7 +505,7 @@ function renderGame() {
       ${renderStartRoundCard(rounds.length > 0)}
       ${rounds.length ? rounds.map(renderRoundBlock).join('') : ''}
     </div>
-    <div>${renderPresenceCard()}${renderMakeupsCard()}${renderAbsencesCard()}</div>
+    <div>${renderPresenceCard()}${renderMakeupsCard()}</div>
   </div>`;
 }
 
@@ -568,43 +568,6 @@ async function playMakeup(qid) {
   await startMakeup(qid);
 }
 
-// Planned absences: "I'll be out on these dates" — a heads-up for the team, not a game rule.
-// Doesn't exempt anyone from makeups; it's just visible in advance so a host away is expected.
-function renderAbsencesCard() {
-  const list = S.game.upcomingAbsences || [];
-  return `<div class="card">
-    <h2>Planned time off</h2>
-    ${list.length ? `<ul class="scoreboard">
-      ${list.map(a => `<li>${esc(a.date)} · ${avatar(a.name, a.emoji)} ${esc(a.name)}
-        ${a.playerId === S.game.me.id ? `<span style="margin-left:auto"><button class="ghost" onclick="cancelAbsence(${a.id})">Cancel</button></span>` : ''}</li>`).join('')}
-    </ul>` : '<p class="muted small">Nobody\'s scheduled time off yet.</p>'}
-    <details class="host-tools mt">
-      <summary>I'll be out…</summary>
-      <div>
-        <label class="mt" for="absFrom">From</label>
-        <input type="date" id="absFrom" value="${esc(val('absFrom'))}">
-        <label class="mt" for="absTo">To (optional — leave blank for one day)</label>
-        <input type="date" id="absTo" value="${esc(val('absTo'))}">
-        <div class="err">${esc(S.err.absence || '')}</div>
-        <button class="primary mt" onclick="scheduleAbsence()">Mark me out</button>
-      </div>
-    </details>
-  </div>`;
-}
-
-function scheduleAbsence() {
-  const from = document.getElementById('absFrom').value;
-  const to = document.getElementById('absTo').value;
-  if (!from) { S.err.absence = 'Pick a date'; render(); return; }
-  act(async () => {
-    await api('/api/absence', { from, to: to || from });
-    clearVal('absFrom', 'absTo');
-  }, 'absence');
-}
-
-function cancelAbsence(id) {
-  act(() => api(`/api/absence/${id}/cancel`, {}), 'absence');
-}
 
 // Always-available "start a round" entry point — compact (a toggle link) once at least one
 // round is already active, expanded by default when there are none yet.
@@ -639,7 +602,7 @@ function renderScoreboard(round) {
       ${rows.map((r, i) => `<li><span class="pos">${i + 1}</span>${avatar(r.name, r.emoji)} ${esc(r.name)}
         <span class="pts ${r.points >= 2 ? 'two' : r.points ? 'one' : 'zero'}">${r.points}</span></li>`).join('')}
     </ul>` : '<p class="muted small">No points yet today.</p>'}
-    <p class="small muted mt">Host: ${esc(round.hostName)}${round.isHost ? ' (you)' : ''}${round.hostOutToday ? ' · marked out today — expect deputy mode' : ''}</p>
+    <p class="small muted mt">Host: ${esc(round.hostName)}${round.isHost ? ' (you)' : ''}</p>
   </div>`;
 }
 
@@ -839,13 +802,14 @@ function renderHostTools(round) {
   const editingHere = S.editingDraft && S.composerRoundId === round.id;
   const composerOpen = S.composerRoundId === round.id;
   const hostErrKey = `host:${round.id}`;
-  const roundErrKey = `round:${round.id}`;
-  const importErrKey = `import:${round.id}`;
   return `<div class="card">
-    <h2>Host desk — ${esc(round.topic)}</h2>
+    <div class="row" style="margin-bottom:4px">
+      <h2 class="grow">Host desk — ${esc(round.topic)}</h2>
+      <button class="ghost" onclick="setView('manage')">Round controls →</button>
+    </div>
     ${drafts.length ? `<h3>Question queue</h3>
       ${drafts.map(d => `<div class="draft-item">
-        <div class="q">${esc(d.text)}<div class="a muted small">answer hidden — Edit to view</div></div>
+        <div class="q">${esc(d.text)}<div class="a muted small">answer hidden — Edit to view${d.scheduledFor ? ` · <b style="color:var(--accent)">scheduled for ${esc(d.scheduledFor)}</b>` : ''}</div></div>
         <button class="primary" ${round.question && round.question.phase !== 'results' ? 'disabled title="Finish the current question first"' : ''}
           onclick="startQ(${d.id})">Ask it</button>
         <button onclick="editDraft(${d.id},${round.id})">Edit</button>
@@ -863,9 +827,12 @@ function renderHostTools(round) {
         <div class="decoy-inputs">
           ${[0, 1, 2, 3].map(i => `<input type="text" id="decoy${i}" placeholder="Decoy ${i + 1}${i > 1 ? ' (optional)' : ''}" value="${esc(val('decoy' + i))}">`).join('')}
         </div>
+        <label class="mt" for="qschedule">Schedule for (optional)</label>
+        <input type="text" id="qschedule" placeholder="YYYY-MM-DD — e.g. a day you know you'll be out" value="${esc(val('qschedule'))}">
+        <p class="small muted">Queues it as usual, but on that date it jumps to the top of the queue — so whoever's around that day (you or a deputy) has the right one ready to ask.</p>
         <label class="mt" for="qdate">Backdate (optional)</label>
         <input type="text" id="qdate" placeholder="YYYY-MM-DD — recreate a question from before the app" value="${esc(val('qdate'))}">
-        <p class="small muted">Leave blank to queue it normally. With a date, it goes straight into that day's History as already played — people with imported points on that date are covered; everyone else gets it as a makeup.</p>
+        <p class="small muted">For the past instead of the future — goes straight into that day's History as already played. Use Schedule or Backdate, not both.</p>
         <div class="err">${esc(S.err[hostErrKey] || '')}</div>
         ${S.hostMsg ? `<p class="small" style="color:var(--accent)">${esc(S.hostMsg)}</p>` : ''}
         <div class="row">
@@ -874,45 +841,57 @@ function renderHostTools(round) {
         </div>
       </div>` : ''}
     </details>
-
-    <details class="host-tools">
-      <summary>Round controls</summary>
-      <div>
-        ${round.session ? `<button onclick="endSession(${round.id})">End today's game</button>` : '<p class="muted small">Today\'s game starts automatically when you ask the first question.</p>'}
-        <div class="mt">
-          <label>Hand hosting of <b>${esc(round.topic)}</b> to…</label>
-          <div class="row">
-            <select id="transferSel-${round.id}" class="grow">${S.game.players.filter(p => p.id !== round.hostId).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-            <button onclick="transferHost(${round.id})">Transfer</button>
-          </div>
-        </div>
-        <div class="mt">
-          <label>Manage players</label>
-          ${S.game.players.filter(p => p.id !== round.hostId).map(p => `<div class="row" style="margin-bottom:6px">${avatar(p.name, p.emoji)}<span class="grow">${esc(p.name)}</span><button class="danger" onclick="deletePlayer(${p.id})">Delete</button></div>`).join('') || '<p class="muted small">Nobody else has joined yet.</p>'}
-          ${(S.game.deletedPlayers || []).map(p => `<div class="row" style="margin-bottom:6px"><span class="grow muted">${esc(p.name)} (deleted)</span><button onclick="restorePlayer(${p.id})">Restore</button></div>`).join('')}
-          <p class="small muted">Deleting is soft: they vanish from the game and stats, but their answers are kept and restoring brings everything back. Shared across every round, not just this one.</p>
-        </div>
-        <div class="mt">
-          <label>Import old points</label>
-          <p class="small muted">One entry per line: <b>date, name, points</b> — commas or tabs, so pasting from a spreadsheet works. Dates like 2026-06-12 or 6/12/2026. Lands in this round's stats as imported points.</p>
-          <textarea id="importText-${round.id}" rows="5" placeholder="2026-06-12, Nina, 2&#10;2026-06-12, Eric, 1">${esc(val('importText-' + round.id))}</textarea>
-          <div class="row mt">
-            <label class="row small" style="font-weight:400;width:auto"><input type="checkbox" id="importCreate-${round.id}" ${S.importCreate ? 'checked' : ''} onchange="S.importCreate=this.checked"> create missing players</label>
-            <button onclick="importPoints(${round.id})">Import</button>
-          </div>
-          ${round.importedPoints && round.importedPoints.count ? `<p class="small muted">This round has ${round.importedPoints.count} imported entries worth ${round.importedPoints.total} pts. <button class="ghost danger" onclick="clearImports(${round.id})">Delete them all</button></p>` : ''}
-          <div class="err">${esc(S.err[importErrKey] || '')}</div>
-          ${S.importMsg ? `<p class="small" style="color:var(--accent)">${esc(S.importMsg)}</p>` : ''}
-        </div>
-        <div class="mt">
-          <label>Done with this round?</label>
-          <p class="small muted">Archives “${esc(round.topic)}” — its history and stats stick around, and other rounds keep running.</p>
-          <button class="danger" onclick="archiveRound(${round.id})">Archive this round</button>
-        </div>
-        <div class="err">${esc(S.err[roundErrKey] || '')}</div>
-      </div>
-    </details>
   </div>`;
+}
+
+function renderManagePlayersCard() {
+  const hostedIds = new Set((S.game.rounds || []).map(r => r.hostId));
+  return `<div class="card">
+    <h2>Manage players</h2>
+    ${S.game.players.filter(p => !hostedIds.has(p.id)).map(p => `<div class="row" style="margin-bottom:6px">${avatar(p.name, p.emoji)}<span class="grow">${esc(p.name)}</span><button class="danger" onclick="deletePlayer(${p.id})">Delete</button></div>`).join('') || '<p class="muted small">Nobody else has joined yet.</p>'}
+    ${(S.game.deletedPlayers || []).map(p => `<div class="row" style="margin-bottom:6px"><span class="grow muted">${esc(p.name)} (deleted)</span><button onclick="restorePlayer(${p.id})">Restore</button></div>`).join('')}
+    <p class="small muted">Deleting is soft: they vanish from the game and stats, but their answers are kept and restoring brings everything back. Shared across every round.</p>
+  </div>`;
+}
+
+function renderRoundControls(round) {
+  const roundErrKey = `round:${round.id}`;
+  const importErrKey = `import:${round.id}`;
+  return `<div class="card">
+    <h2>Round controls — ${esc(round.topic)}</h2>
+    ${round.session ? `<button onclick="endSession(${round.id})">End today's game</button>` : '<p class="muted small">Today\'s game starts automatically when you ask the first question.</p>'}
+    <div class="mt">
+      <label>Hand hosting of <b>${esc(round.topic)}</b> to…</label>
+      <div class="row">
+        <select id="transferSel-${round.id}" class="grow">${S.game.players.filter(p => p.id !== round.hostId).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+        <button onclick="transferHost(${round.id})">Transfer</button>
+      </div>
+    </div>
+    <div class="mt">
+      <label>Import old points</label>
+      <p class="small muted">One entry per line: <b>date, name, points</b> — commas or tabs, so pasting from a spreadsheet works. Dates like 2026-06-12 or 6/12/2026. Lands in this round's stats as imported points.</p>
+      <textarea id="importText-${round.id}" rows="5" placeholder="2026-06-12, Nina, 2&#10;2026-06-12, Eric, 1">${esc(val('importText-' + round.id))}</textarea>
+      <div class="row mt">
+        <label class="row small" style="font-weight:400;width:auto"><input type="checkbox" id="importCreate-${round.id}" ${S.importCreate ? 'checked' : ''} onchange="S.importCreate=this.checked"> create missing players</label>
+        <button onclick="importPoints(${round.id})">Import</button>
+      </div>
+      ${round.importedPoints && round.importedPoints.count ? `<p class="small muted">This round has ${round.importedPoints.count} imported entries worth ${round.importedPoints.total} pts. <button class="ghost danger" onclick="clearImports(${round.id})">Delete them all</button></p>` : ''}
+      <div class="err">${esc(S.err[importErrKey] || '')}</div>
+      ${S.importMsg ? `<p class="small" style="color:var(--accent)">${esc(S.importMsg)}</p>` : ''}
+    </div>
+    <div class="mt">
+      <label>Done with this round?</label>
+      <p class="small muted">Archives “${esc(round.topic)}” — its history and stats stick around, and other rounds keep running.</p>
+      <button class="danger" onclick="archiveRound(${round.id})">Archive this round</button>
+    </div>
+    <div class="err">${esc(S.err[roundErrKey] || '')}</div>
+  </div>`;
+}
+
+function renderManageTab() {
+  const hostedRounds = (S.game.rounds || []).filter(r => r.isHost);
+  if (!hostedRounds.length) return '<div class="empty">You\'re not hosting any active round right now.</div>';
+  return renderManagePlayersCard() + hostedRounds.map(renderRoundControls).join('');
 }
 
 // ---------- actions ----------
@@ -1005,18 +984,20 @@ function createRound() {
 
 function toggleComposer(roundId) {
   if (S.composerRoundId === roundId) { S.composerRoundId = null; S.editingDraft = null; }
-  else { S.composerRoundId = roundId; S.editingDraft = null; clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate'); }
+  else { S.composerRoundId = roundId; S.editingDraft = null; clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate', 'qschedule'); }
   render();
 }
 
 function saveQuestion(roundId) {
   const dateEl = document.getElementById('qdate');
+  const scheduleEl = document.getElementById('qschedule');
   const body = {
     roundId,
     text: document.getElementById('qtext').value.trim(),
     answer: document.getElementById('qanswer').value.trim(),
     decoys: [0, 1, 2, 3].map(i => document.getElementById('decoy' + i).value.trim()).filter(Boolean),
     date: dateEl ? dateEl.value.trim() : '',
+    scheduledFor: scheduleEl ? scheduleEl.value.trim() : '',
   };
   const path = S.editingDraft ? `/api/host/question/${S.editingDraft}/update` : '/api/host/question';
   act(async () => {
@@ -1024,7 +1005,7 @@ function saveQuestion(roundId) {
     const r = await api(path, body);
     S.editingDraft = null;
     S.composerRoundId = null;
-    clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate');
+    clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate', 'qschedule');
     if (r.backdated) S.hostMsg = `Added to ${r.backdated} in History.`;
   }, `host:${roundId}`);
 }
@@ -1037,6 +1018,7 @@ function editDraft(id, roundId) {
   S.composerRoundId = roundId;
   draftValues.qtext = d.text;
   draftValues.qanswer = d.answer;
+  draftValues.qschedule = d.scheduledFor || '';
   const decoys = d.choices.filter((_, i) => i !== d.correctIndex);
   [0, 1, 2, 3].forEach(i => { draftValues['decoy' + i] = decoys[i] || ''; });
   render();
@@ -1044,7 +1026,7 @@ function editDraft(id, roundId) {
 function cancelEdit() {
   S.editingDraft = null;
   S.composerRoundId = null;
-  clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate');
+  clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate', 'qschedule');
   render();
 }
 
@@ -1304,7 +1286,6 @@ Object.assign(window, {
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice,
   setStatsRound, setStatsPeriod, applyStatsRange, passGuess, removeQ, recallQ, deletePlayer,
   restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, deputyStart, deputyAdv,
-  scheduleAbsence, cancelAbsence,
   S, render,
 });
 
