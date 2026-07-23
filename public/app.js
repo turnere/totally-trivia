@@ -397,7 +397,7 @@ function tvReveal(qq) {
 
 function tvChoosing(qq, round) {
   return `<div class="card">
-    <span class="phase-tag choosing">Multiple choice — stick with your guess for 2</span>
+    <span class="phase-tag choosing">${qq.isTF ? 'True or false?' : 'Multiple choice — stick with your guess for 2'}</span>
     <div class="question-text">${esc(qq.text)}</div>
     <div class="choices">
       ${qq.choices.map((c, i) => `<button class="static"><span class="letter">${'ABCD'[i] || i + 1}</span> ${esc(c)}</button>`).join('')}
@@ -720,7 +720,7 @@ function renderChoosing(qq, round) {
   const myGuess = qq.myAnswer?.guess;
   const errKey = `game:${round.id}`;
   return `<div class="card">
-    <span class="phase-tag choosing">Multiple choice — stick with your guess for 2</span>
+    <span class="phase-tag choosing">${qq.isTF ? 'True or false?' : 'Multiple choice — stick with your guess for 2'}</span>
     <div class="question-text">${esc(qq.text)}</div>
     ${myGuess != null ? `<p class="small muted" style="margin-bottom:10px">You guessed: <b>${myGuess === '' ? '(passed)' : esc(myGuess)}</b></p>` : ''}
     <div class="choices">
@@ -740,6 +740,15 @@ function resultRow(a, qq, canJudge) {
   const choiceTxt = a.forfeited ? '<span class="muted">skipped</span>'
     : a.choiceIndex === null || a.choiceIndex === undefined ? '<span class="muted">—</span>'
     : `${esc(qq.choices[a.choiceIndex])} ${a.choiceIndex === qq.correctIndex ? '<span class="mark-right">✓</span>' : '<span class="mark-wrong">✗</span>'}`;
+  const ptsCell = `<td><span class="pts ${a.points === 2 ? 'two' : a.points === 1 ? 'one' : 'zero'}">+${a.points ?? 0}</span>
+      ${a.points > 0 ? '<img src="/parrot.gif" class="parrot" alt="party parrot">'.repeat(a.points) : ''}</td>`;
+  if (qq.isTF) {
+    return `<tr>
+    <td>${avatar(a.name, a.emoji)} ${esc(a.name)} ${a.isMakeup ? '<span class="badge makeup">makeup</span>' : ''}</td>
+    <td>${choiceTxt}</td>
+    ${ptsCell}
+  </tr>`;
+  }
   const guessTxt = a.guess === null || a.guess === undefined ? '<span class="muted">—</span>'
     : a.guess === '' ? '<span class="muted">(passed)</span>'
     : `${esc(a.guess)} ${a.guessCorrect ? '<span class="mark-right">✓</span>' : '<span class="mark-wrong">✗</span>'}`;
@@ -748,29 +757,31 @@ function resultRow(a, qq, canJudge) {
     <td>${guessTxt}
       ${canJudge && a.guess ? `<button class="ghost small" onclick="judge(${qq.id},${a.playerId},${!a.guessCorrect})">flip</button>` : ''}</td>
     <td>${choiceTxt}</td>
-    <td><span class="pts ${a.points === 2 ? 'two' : a.points === 1 ? 'one' : 'zero'}">+${a.points ?? 0}</span>
-      ${a.points > 0 ? '<img src="/parrot.gif" class="parrot" alt="party parrot">'.repeat(a.points) : ''}</td>
+    ${ptsCell}
   </tr>`;
 }
 
 // Full results table: everyone who answered, then anyone who missed it (makeup pending).
+// True/false skips the written-guess column entirely — there's never anything in it.
 function resultsTable(qq, canJudge) {
   const hostId = qq.roundHostId;
   const covered = qq.covered || [];
   const missed = S.game.players.filter(p =>
     p.id !== hostId && !qq.answers.some(a => a.playerId === p.id) && !covered.some(c => c.id === p.id));
+  const guessCol = qq.isTF ? '' : '<th>Written guess</th>';
+  const coveredColspan = qq.isTF ? 1 : 2;
   return `<table class="results">
-    <tr><th>Player</th><th>Written guess</th><th>Multiple choice</th><th>Points</th></tr>
+    <tr><th>Player</th>${guessCol}<th>Multiple choice</th><th>Points</th></tr>
     ${qq.answers.map(a => resultRow(a, qq, canJudge)).join('')}
     ${covered.map(p => `<tr>
       <td>${avatar(p.name, p.emoji)} ${esc(p.name)} <span class="badge">pre-app</span></td>
-      <td colspan="2"><span class="muted">played before the app</span></td>
+      <td colspan="${coveredColspan}"><span class="muted">played before the app</span></td>
       <td><span class="pts ${p.points >= 2 ? 'two' : p.points ? 'one' : 'zero'}">+${p.points}</span>${'<img src="/parrot.gif" class="parrot" alt="party parrot">'.repeat(Math.min(p.points, 4))}
         <span class="muted small">that day</span></td>
     </tr>`).join('')}
     ${missed.map(p => `<tr>
       <td>${avatar(p.name, p.emoji)} ${esc(p.name)} <span class="badge makeup">missed</span></td>
-      <td><span class="muted">—</span></td>
+      ${qq.isTF ? '' : '<td><span class="muted">—</span></td>'}
       <td><span class="muted">—</span></td>
       <td><span class="muted small">makeup pending</span></td>
     </tr>`).join('')}
@@ -821,7 +832,7 @@ function renderHostTools(round) {
     <h2>Host desk — ${esc(round.topic)}</h2>
     ${drafts.length ? `<h3>Question queue</h3>
       ${drafts.map(d => `<div class="draft-item">
-        <div class="q">${esc(d.text)}<div class="a muted small">answer hidden — Edit to view${d.scheduledFor ? ` · <b style="color:var(--accent)">scheduled for ${esc(d.scheduledFor)}</b>` : ''}</div></div>
+        <div class="q">${esc(d.text)}<div class="a muted small">${d.isTF ? 'true/false' : 'answer hidden'} — Edit to view${d.scheduledFor ? ` · <b style="color:var(--accent)">scheduled for ${esc(d.scheduledFor)}</b>` : ''}</div></div>
         <button class="primary" ${askDisabled}
           onclick="startQ(${d.id})">Ask it</button>
         <button onclick="editDraft(${d.id},${round.id})">Edit</button>
@@ -1041,6 +1052,7 @@ function saveQuestion(roundId) {
   const isTF = S.qMode === 'tf';
   const body = {
     roundId,
+    isTF,
     text: document.getElementById('qtext').value.trim(),
     answer: isTF ? S.tfAnswer : document.getElementById('qanswer').value.trim(),
     decoys: isTF ? [S.tfAnswer === 'False' ? 'True' : 'False']
@@ -1060,12 +1072,6 @@ function saveQuestion(roundId) {
   }, `host:${roundId}`);
 }
 
-// A question whose two choices are exactly "True"/"False" is treated as true/false in the
-// composer — no separate stored flag, just inferred from the shape.
-function isTFQuestion(d) {
-  return d.choices.length === 2 && d.choices.every(c => ['true', 'false'].includes(String(c).trim().toLowerCase()));
-}
-
 function editDraft(id, roundId) {
   const round = (S.game.rounds || []).find(r => r.id === roundId);
   const d = round && (round.drafts || []).find(x => x.id === id);
@@ -1074,7 +1080,7 @@ function editDraft(id, roundId) {
   S.composerRoundId = roundId;
   draftValues.qtext = d.text;
   draftValues.qschedule = d.scheduledFor || '';
-  if (isTFQuestion(d)) {
+  if (d.isTF) {
     S.qMode = 'tf';
     S.tfAnswer = d.answer.trim().toLowerCase() === 'false' ? 'False' : 'True';
     draftValues.qanswer = '';
@@ -1185,6 +1191,16 @@ function renderMakeup() {
           onkeydown="if(event.key==='Enter')makeupGuess()">
         <button class="primary" onclick="makeupGuess()">Lock it in</button>
         <button onclick="makeupGuess(true)" title="Skip the written guess — you can still answer the multiple choice for 1 point">Pass</button>
+      </div>
+      <div class="err">${esc(S.err.makeup || '')}</div>
+    </div>`;
+  }
+  if (m.stage === 'choose' && m.isTF) {
+    return `${back}<div class="card">
+      <span class="phase-tag choosing">True or false?</span>
+      <div class="question-text">${esc(m.text)}</div>
+      <div class="choices">
+        ${m.choices.map((c, i) => `<button onclick="makeupChoice(${i})"><span class="letter">${'ABCD'[i] || i + 1}</span> ${esc(c)}</button>`).join('')}
       </div>
       <div class="err">${esc(S.err.makeup || '')}</div>
     </div>`;

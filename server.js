@@ -87,6 +87,7 @@ for (const stmt of [
   'ALTER TABLE questions ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE questions ADD COLUMN historical INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE questions ADD COLUMN scheduled_for TEXT',
+  'ALTER TABLE questions ADD COLUMN is_tf INTEGER NOT NULL DEFAULT 0',
 ]) {
   try { db.exec(stmt); } catch { /* column already exists */ }
 }
@@ -151,6 +152,8 @@ function computePoints(row, question) {
   if (row.forfeited) return 0;
   if (row.choice_index === null || row.choice_index === undefined) return 0;
   if (row.choice_index !== question.correct_index) return 0;
+  // True/false is a 50/50 pick with no written guess to stick with — worth 1 point, always.
+  if (question.is_tf) return 1;
   return row.guess_correct ? 2 : 1;
 }
 
@@ -262,6 +265,7 @@ function questionPayload(question, viewer, isHost, hostId) {
     phase,
     text: question.text,
     roundHostId: hostId,
+    isTF: !!question.is_tf,
     choices: showChoices ? choices : null,
     correctIndex: showAnswer ? question.correct_index : null,
     answer: showAnswer ? question.answer : null,
@@ -307,7 +311,7 @@ function buildRoundState(round, viewer) {
   }
   const d = q.drafts.all(round.id, todayStr());
   const drafts = isHost
-    ? d.map(x => ({ id: x.id, text: x.text, answer: x.answer, choices: JSON.parse(x.choices), correctIndex: x.correct_index, scheduledFor: x.scheduled_for }))
+    ? d.map(x => ({ id: x.id, text: x.text, answer: x.answer, choices: JSON.parse(x.choices), correctIndex: x.correct_index, scheduledFor: x.scheduled_for, isTF: !!x.is_tf }))
     : { count: d.length };
   return {
     id: round.id, topic: round.topic, hostId: round.host_id, hostName: round.host_name, hostEmoji: round.host_emoji,
@@ -352,6 +356,7 @@ function questionDetail(question, canJudge) {
     canJudge: !!canJudge,
     roundHostId: (db.prepare('SELECT host_id FROM rounds WHERE id = ?').get(question.round_id) || {}).host_id,
     historical: !!question.historical,
+    isTF: !!question.is_tf,
     covered: question.historical && question.session_id
       ? db.prepare(`SELECT p.id, p.name, p.emoji, SUM(lp.points) AS points
                     FROM legacy_points lp JOIN players p ON p.id = lp.player_id
@@ -677,6 +682,7 @@ route('POST', /^\/api\/host\/question$/, async (req, res, player) => {
   const parsed = parseQuestionBody(body);
   if (parsed.error) return fail(res, 400, parsed.error);
   const { choices, correctIndex } = shuffleIn(parsed.answer, parsed.decoys);
+  const isTF = !!body.isTF;
   if (body.date) {
     // Backdated: goes straight into that day's history as an already-played question.
     const date = parseImportDate(body.date);
@@ -687,9 +693,9 @@ route('POST', /^\/api\/host\/question$/, async (req, res, player) => {
       db.prepare(`INSERT INTO sessions (round_id, date, status) VALUES (?, ?, 'closed')`).run(round.id, date);
       s = db.prepare('SELECT * FROM sessions WHERE round_id = ? AND date = ?').get(round.id, date);
     }
-    db.prepare(`INSERT INTO questions (round_id, session_id, text, answer, choices, correct_index, phase, historical, asked_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'closed', 1, ?)`)
-      .run(round.id, s.id, parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, `${date} 12:00:00`);
+    db.prepare(`INSERT INTO questions (round_id, session_id, text, answer, choices, correct_index, phase, historical, asked_at, is_tf)
+                VALUES (?, ?, ?, ?, ?, ?, 'closed', 1, ?, ?)`)
+      .run(round.id, s.id, parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, `${date} 12:00:00`, isTF ? 1 : 0);
     broadcast();
     return json(res, 200, { ok: true, backdated: date });
   }
@@ -698,8 +704,8 @@ route('POST', /^\/api\/host\/question$/, async (req, res, player) => {
     scheduledFor = parseImportDate(body.scheduledFor);
     if (!scheduledFor) return fail(res, 400, 'Bad scheduled date (use YYYY-MM-DD or M/D/YYYY)');
   }
-  db.prepare('INSERT INTO questions (round_id, text, answer, choices, correct_index, scheduled_for) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(round.id, parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, scheduledFor);
+  db.prepare('INSERT INTO questions (round_id, text, answer, choices, correct_index, scheduled_for, is_tf) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(round.id, parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, scheduledFor, isTF ? 1 : 0);
   broadcast();
   json(res, 200, { ok: true });
 });
@@ -713,6 +719,7 @@ route('POST', /^\/api\/host\/question\/(\d+)\/update$/, async (req, res, player,
   const parsed = parseQuestionBody(body);
   if (parsed.error) return fail(res, 400, parsed.error);
   const { choices, correctIndex } = shuffleIn(parsed.answer, parsed.decoys);
+  const isTF = !!body.isTF;
   if (body.date) {
     // Editing a draft with a backdate converts it into a historical question.
     const date = parseImportDate(body.date);
@@ -724,8 +731,8 @@ route('POST', /^\/api\/host\/question\/(\d+)\/update$/, async (req, res, player,
       s = db.prepare('SELECT * FROM sessions WHERE round_id = ? AND date = ?').get(round.id, date);
     }
     db.prepare(`UPDATE questions SET text = ?, answer = ?, choices = ?, correct_index = ?,
-                phase = 'closed', historical = 1, session_id = ?, asked_at = ? WHERE id = ?`)
-      .run(parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, s.id, `${date} 12:00:00`, question.id);
+                phase = 'closed', historical = 1, session_id = ?, asked_at = ?, is_tf = ? WHERE id = ?`)
+      .run(parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, s.id, `${date} 12:00:00`, isTF ? 1 : 0, question.id);
     broadcast();
     return json(res, 200, { ok: true, backdated: date });
   }
@@ -734,8 +741,8 @@ route('POST', /^\/api\/host\/question\/(\d+)\/update$/, async (req, res, player,
     scheduledFor = parseImportDate(body.scheduledFor);
     if (!scheduledFor) return fail(res, 400, 'Bad scheduled date (use YYYY-MM-DD or M/D/YYYY)');
   }
-  db.prepare('UPDATE questions SET text = ?, answer = ?, choices = ?, correct_index = ?, scheduled_for = ? WHERE id = ?')
-    .run(parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, scheduledFor, question.id);
+  db.prepare('UPDATE questions SET text = ?, answer = ?, choices = ?, correct_index = ?, scheduled_for = ?, is_tf = ? WHERE id = ?')
+    .run(parsed.text, parsed.answer, JSON.stringify(choices), correctIndex, scheduledFor, isTF ? 1 : 0, question.id);
   broadcast();
   json(res, 200, { ok: true });
 });
@@ -774,8 +781,10 @@ route('POST', /^\/api\/host\/question\/(\d+)\/start$/, async (req, res, player, 
   const s = ensureTodaySession(round);
   const cur = q.currentQuestion.get(s.id);
   if (cur) db.prepare(`UPDATE questions SET phase = 'closed' WHERE id = ?`).run(cur.id);
-  db.prepare(`UPDATE questions SET phase = 'guessing', session_id = ?, asked_at = datetime('now') WHERE id = ?`)
-    .run(s.id, question.id);
+  // True/false skips the written-guess step entirely — straight to picking.
+  const startPhase = question.is_tf ? 'choosing' : 'guessing';
+  db.prepare(`UPDATE questions SET phase = ?, session_id = ?, asked_at = datetime('now') WHERE id = ?`)
+    .run(startPhase, s.id, question.id);
   broadcast();
   json(res, 200, { ok: true });
 });
@@ -827,8 +836,9 @@ route('POST', /^\/api\/deputy\/start$/, async (req, res, player) => {
   }
   const draft = db.prepare(`SELECT * FROM questions WHERE round_id = ? AND phase = 'draft' ORDER BY id LIMIT 1`).get(round.id);
   if (!draft) return fail(res, 409, 'The question queue is empty');
-  db.prepare(`UPDATE questions SET phase = 'guessing', session_id = ?, asked_at = datetime('now') WHERE id = ?`)
-    .run(s.id, draft.id);
+  const startPhase = draft.is_tf ? 'choosing' : 'guessing';
+  db.prepare(`UPDATE questions SET phase = ?, session_id = ?, asked_at = datetime('now') WHERE id = ?`)
+    .run(startPhase, s.id, draft.id);
   broadcast();
   json(res, 200, { ok: true });
 });
@@ -1074,6 +1084,10 @@ route('GET', /^\/api\/makeup\/(\d+)$/, (req, res, player, m) => {
   if (row && row.finalized) {
     return json(res, 200, { stage: 'done', detail: questionDetail(question, false) });
   }
+  if (question.is_tf) {
+    // No written guess for true/false — straight to picking.
+    return json(res, 200, { stage: 'choose', text: question.text, choices: JSON.parse(question.choices), isTF: true });
+  }
   if (row && row.guess !== null) {
     // Guess is in — now they get the same reveal everyone else got, then pick.
     const others = q.answersFor.all(question.id)
@@ -1107,8 +1121,13 @@ route('POST', /^\/api\/makeup\/(\d+)\/guess$/, async (req, res, player, m) => {
 route('POST', /^\/api\/makeup\/(\d+)\/choice$/, async (req, res, player, m) => {
   const question = q.question.get(Number(m[1]));
   if (!question) return fail(res, 404, 'No such question');
-  const row = q.myAnswer.get(question.id, player.id);
-  if (!row || row.guess === null || row.finalized) return fail(res, 409, 'Guess first');
+  let row = q.myAnswer.get(question.id, player.id);
+  // True/false never gets a guess row from /makeup/:id/guess — create the answer row here instead.
+  if (!row && question.is_tf) {
+    db.prepare('INSERT INTO answers (question_id, player_id, is_makeup) VALUES (?, ?, 1)').run(question.id, player.id);
+    row = q.myAnswer.get(question.id, player.id);
+  }
+  if (!row || (!question.is_tf && row.guess === null) || row.finalized) return fail(res, 409, 'Guess first');
   const body = await readBody(req);
   const idx = Number(body.choice);
   const choices = JSON.parse(question.choices);
