@@ -269,10 +269,10 @@ function render() {
     </header>
     ${S.showBirdPicker ? renderBirdPicker() : ''}
     <nav class="tabs">
-      ${['game', 'history', 'stats', ...(g.isHost ? ['manage'] : [])].map(v =>
-        `<button class="${S.view === v ? 'active' : ''}" onclick="setView('${v}')">${{ game: 'Play', history: 'History', stats: 'Stats', manage: 'Manage' }[v]}</button>`).join('')}
+      ${['game', 'history', 'stats', ...(g.isHost ? ['host'] : [])].map(v =>
+        `<button class="${S.view === v ? 'active' : ''}" onclick="setView('${v}')">${{ game: 'Play', history: 'History', stats: 'Stats', host: 'Host' }[v]}</button>`).join('')}
     </nav>
-    ${S.view === 'game' ? renderGame() : S.view === 'history' ? renderHistory() : S.view === 'stats' ? renderStats() : renderManageTab()}
+    ${S.view === 'game' ? renderGame() : S.view === 'history' ? renderHistory() : S.view === 'stats' ? renderStats() : renderHostTab()}
   `;
   restoreFocus(focusedId, selStart);
 }
@@ -495,8 +495,10 @@ function renderGame() {
   if (guessingNow.length === 1) {
     const r = guessingNow[0];
     return `<div class="spotlight-stage ${S.animFresh ? 'anim' : ''}">
-      <p class="small muted" style="text-align:center;margin-bottom:8px">${esc(r.topic)}</p>
-      ${renderGuessing(r.question, r)}
+      <div style="width:100%;max-width:640px">
+        <p class="small muted" style="text-align:center;margin-bottom:8px">${esc(r.topic)}</p>
+        ${renderGuessing(r.question, r)}
+      </div>
     </div>`;
   }
 
@@ -519,7 +521,7 @@ function renderRoundBlock(round) {
   const recent = inResults ? (qq.locked ? renderLockedResults(qq, true) : renderResults(qq, round, true)) : '';
   return `<div class="round-block">
     ${renderScoreboard(round)}
-    ${live}${between}${round.isHost ? renderHostTools(round) : ''}${recent}
+    ${live}${between}${recent}
   </div>`;
 }
 
@@ -607,7 +609,14 @@ function renderScoreboard(round) {
 }
 
 function renderBetweenQuestions(round) {
-  if (round.isHost) return ''; // host sees their tools below
+  if (round.isHost) {
+    const queued = Array.isArray(round.drafts) ? round.drafts.length : 0;
+    return `<div class="card empty">
+      No question in progress.
+      <p class="small mt">${queued > 0 ? `${queued} question${queued > 1 ? 's' : ''} queued and ready` : 'Nothing queued yet'}</p>
+      <p class="mt"><button class="primary" onclick="setView('host')">Go to the Host tab to ask one</button></p>
+    </div>`;
+  }
   const queued = typeof round.drafts?.count === 'number' ? round.drafts.count : 0;
   return `<div class="card empty">
     Waiting for ${esc(round.hostName)} to launch the next question…
@@ -802,15 +811,16 @@ function renderHostTools(round) {
   const editingHere = S.editingDraft && S.composerRoundId === round.id;
   const composerOpen = S.composerRoundId === round.id;
   const hostErrKey = `host:${round.id}`;
+  // Only one question runs at a time, across every round — so "Ask it" is disabled here if
+  // ANY round (not just this one) currently has a question in progress.
+  const blocking = (S.game.rounds || []).find(r => r.question && r.question.phase !== 'results');
+  const askDisabled = blocking ? `disabled title="Finish &quot;${esc(blocking.topic)}&quot;'s question first — only one runs at a time"` : '';
   return `<div class="card">
-    <div class="row" style="margin-bottom:4px">
-      <h2 class="grow">Host desk — ${esc(round.topic)}</h2>
-      <button class="ghost" onclick="setView('manage')">Round controls →</button>
-    </div>
+    <h2>Host desk — ${esc(round.topic)}</h2>
     ${drafts.length ? `<h3>Question queue</h3>
       ${drafts.map(d => `<div class="draft-item">
         <div class="q">${esc(d.text)}<div class="a muted small">answer hidden — Edit to view${d.scheduledFor ? ` · <b style="color:var(--accent)">scheduled for ${esc(d.scheduledFor)}</b>` : ''}</div></div>
-        <button class="primary" ${round.question && round.question.phase !== 'results' ? 'disabled title="Finish the current question first"' : ''}
+        <button class="primary" ${askDisabled}
           onclick="startQ(${d.id})">Ask it</button>
         <button onclick="editDraft(${d.id},${round.id})">Edit</button>
         <button class="danger" onclick="deleteQ(${d.id})">Delete</button>
@@ -897,10 +907,11 @@ function renderRoundControls(round) {
   </div>`;
 }
 
-function renderManageTab() {
+function renderHostTab() {
   const hostedRounds = (S.game.rounds || []).filter(r => r.isHost);
   if (!hostedRounds.length) return '<div class="empty">You\'re not hosting any active round right now.</div>';
-  return renderManagePlayersCard() + hostedRounds.map(renderRoundControls).join('');
+  return renderManagePlayersCard()
+    + hostedRounds.map(r => renderHostTools(r) + renderRoundControls(r)).join('');
 }
 
 // ---------- actions ----------

@@ -750,18 +750,30 @@ route('POST', /^\/api\/host\/question\/(\d+)\/delete$/, async (req, res, player,
   json(res, 200, { ok: true });
 });
 
+// Only one question runs at a time, across every round — rounds can coexist (separate topics,
+// hosts, queues, scoreboards) but the team only ever looks at one question together, the way
+// standup actually works. A question sitting in 'results' doesn't count as blocking; it's done,
+// just still on screen as a recap.
+function questionInProgress() {
+  for (const round of q.activeRounds.all()) {
+    const s = q.openSession.get(round.id);
+    const cur = s && q.currentQuestion.get(s.id);
+    if (cur && cur.phase !== 'results') return { round, question: cur };
+  }
+  return null;
+}
+
 route('POST', /^\/api\/host\/question\/(\d+)\/start$/, async (req, res, player, m) => {
   const question = q.question.get(Number(m[1]));
   const round = hostRoundForQuestion(res, player, question);
   if (!round) return;
   if (round.status !== 'active') return fail(res, 409, 'That round has been archived');
   if (question.phase !== 'draft') return fail(res, 409, 'Question not startable');
+  const blocking = questionInProgress();
+  if (blocking) return fail(res, 409, `Finish "${blocking.round.topic}"'s question first — only one runs at a time`);
   const s = ensureTodaySession(round);
   const cur = q.currentQuestion.get(s.id);
-  if (cur) {
-    if (cur.phase !== 'results') return fail(res, 409, 'Finish the current question first');
-    db.prepare(`UPDATE questions SET phase = 'closed' WHERE id = ?`).run(cur.id);
-  }
+  if (cur) db.prepare(`UPDATE questions SET phase = 'closed' WHERE id = ?`).run(cur.id);
   db.prepare(`UPDATE questions SET phase = 'guessing', session_id = ?, asked_at = datetime('now') WHERE id = ?`)
     .run(s.id, question.id);
   broadcast();
@@ -803,6 +815,10 @@ route('POST', /^\/api\/deputy\/start$/, async (req, res, player) => {
   const body = await readBody(req);
   const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(Number(body.roundId));
   if (!round || round.status !== 'active') return fail(res, 409, 'No such active round');
+  const blocking = questionInProgress();
+  if (blocking && blocking.round.id !== round.id) {
+    return fail(res, 409, `Finish "${blocking.round.topic}"'s question first — only one runs at a time`);
+  }
   const s = ensureTodaySession(round);
   const cur = q.currentQuestion.get(s.id);
   if (cur) {
