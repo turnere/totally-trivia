@@ -157,9 +157,10 @@ const q = {
   playerByToken: db.prepare('SELECT p.* FROM tokens t JOIN players p ON p.id = t.player_id WHERE t.token = ? AND p.deleted = 0'),
   allPlayers: db.prepare('SELECT id, name, emoji FROM players WHERE deleted = 0 ORDER BY name'),
   deletedPlayers: db.prepare('SELECT id, name FROM players WHERE deleted = 1 ORDER BY name'),
-  activeRound: db.prepare(`SELECT r.*, p.name AS host_name, p.emoji AS host_emoji
+  // Any number of rounds can be active at once (concurrent hosts, e.g. two topics same day).
+  activeRounds: db.prepare(`SELECT r.*, p.name AS host_name, p.emoji AS host_emoji
                            FROM rounds r JOIN players p ON p.id = r.host_id
-                           WHERE r.status = 'active' ORDER BY r.id DESC LIMIT 1`),
+                           WHERE r.status = 'active' ORDER BY r.id`),
   openSession: db.prepare(`SELECT * FROM sessions WHERE round_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`),
   currentQuestion: db.prepare(`SELECT * FROM questions WHERE session_id = ? AND deleted = 0 AND phase IN ('guessing','reveal','choosing','results') ORDER BY id LIMIT 1`),
   drafts: db.prepare(`SELECT * FROM questions WHERE round_id = ? AND phase = 'draft' ORDER BY id`),
@@ -240,7 +241,7 @@ function buildCallouts(rows, question) {
   return outs.slice(0, 4);
 }
 
-function questionPayload(question, viewer, isHost) {
+function questionPayload(question, viewer, isHost, hostId) {
   const phase = question.phase;
   const choices = JSON.parse(question.choices);
   const showChoices = isHost || phase === 'choosing' || phase === 'results';
@@ -256,6 +257,7 @@ function questionPayload(question, viewer, isHost) {
     id: question.id,
     phase,
     text: question.text,
+    roundHostId: hostId,
     choices: showChoices ? choices : null,
     correctIndex: showAnswer ? question.correct_index : null,
     answer: showAnswer ? question.answer : null,
@@ -275,51 +277,57 @@ function questionPayload(question, viewer, isHost) {
   };
 }
 
-function buildState(viewer) {
-  const round = q.activeRound.get() || null;
-  const isHost = !!(round && round.host_id === viewer.id);
-  let session = null, question = null, todayScores = null, drafts = null;
-  if (round) {
-    const s = q.openSession.get(round.id);
-    if (s) {
-      session = { id: s.id, date: s.date, status: s.status };
-      const cur = q.currentQuestion.get(s.id);
-      if (cur) question = questionPayload(cur, viewer, isHost);
-      const qs = q.sessionQuestions.all(s.id);
-      const scores = new Map();
-      for (const qq of qs) {
-        for (const a of q.answersFor.all(qq.id)) {
-          if (!a.finalized) continue;
-          scores.set(a.player_id, (scores.get(a.player_id) || 0) + a.points);
-        }
+function buildRoundState(round, viewer) {
+  const isHost = round.host_id === viewer.id;
+  let session = null, question = null, todayScores = null;
+  const s = q.openSession.get(round.id);
+  if (s) {
+    session = { id: s.id, date: s.date, status: s.status };
+    const cur = q.currentQuestion.get(s.id);
+    if (cur) question = questionPayload(cur, viewer, isHost, round.host_id);
+    const qs = q.sessionQuestions.all(s.id);
+    const scores = new Map();
+    for (const qq of qs) {
+      for (const a of q.answersFor.all(qq.id)) {
+        if (!a.finalized) continue;
+        scores.set(a.player_id, (scores.get(a.player_id) || 0) + a.points);
       }
-      todayScores = [...scores.entries()]
-        .map(([playerId, points]) => {
-          const p = q.allPlayers.all().find(x => x.id === playerId);
-          return { playerId, name: p?.name, emoji: p?.emoji, points };
-        })
-        .sort((a, b) => b.points - a.points);
-      session.questionsAsked = qs.filter(x => x.phase !== 'draft').length;
     }
-    const d = q.drafts.all(round.id);
-    drafts = isHost
-      ? d.map(x => ({ id: x.id, text: x.text, answer: x.answer, choices: JSON.parse(x.choices), correctIndex: x.correct_index }))
-      : { count: d.length };
+    todayScores = [...scores.entries()]
+      .map(([playerId, points]) => {
+        const p = q.allPlayers.all().find(x => x.id === playerId);
+        return { playerId, name: p?.name, emoji: p?.emoji, points };
+      })
+      .sort((a, b) => b.points - a.points);
+    session.questionsAsked = qs.filter(x => x.phase !== 'draft').length;
   }
+  const d = q.drafts.all(round.id);
+  const drafts = isHost
+    ? d.map(x => ({ id: x.id, text: x.text, answer: x.answer, choices: JSON.parse(x.choices), correctIndex: x.correct_index }))
+    : { count: d.length };
   return {
-    me: { id: viewer.id, name: viewer.name, emoji: viewer.emoji },
+    id: round.id, topic: round.topic, hostId: round.host_id, hostName: round.host_name, hostEmoji: round.host_emoji,
     isHost,
-    players: q.allPlayers.all(),
-    round: round ? { id: round.id, topic: round.topic, hostId: round.host_id, hostName: round.host_name, hostEmoji: round.host_emoji } : null,
     session,
     question,
     drafts,
     todayScores,
-    makeups: round && !viewer.spectator ? pendingMakeups(round, viewer).map(m => ({ id: m.id, date: m.date, qnum: m.qnum })) : [],
-    deletedPlayers: isHost ? q.deletedPlayers.all() : undefined,
-    importedPoints: isHost && round
+    makeups: !viewer.spectator ? pendingMakeups(round, viewer).map(m => ({ id: m.id, date: m.date, qnum: m.qnum })) : [],
+    importedPoints: isHost
       ? db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(points), 0) AS total FROM legacy_points WHERE round_id = ?').get(round.id)
       : undefined,
+  };
+}
+
+function buildState(viewer) {
+  const rounds = q.activeRounds.all().map(round => buildRoundState(round, viewer));
+  const isHost = rounds.some(r => r.isHost);
+  return {
+    me: { id: viewer.id, name: viewer.name, emoji: viewer.emoji },
+    isHost,
+    players: q.allPlayers.all(),
+    rounds,
+    deletedPlayers: isHost ? q.deletedPlayers.all() : undefined,
     presence: {
       online: [...new Set([...sseClients].map(c => c.playerId).filter(id => id > 0))],
       active: [...lastSeen.entries()].filter(([, t]) => Date.now() - t < 120000).map(([id]) => id),
@@ -539,9 +547,10 @@ route('POST', /^\/api\/avatar$/, async (req, res, player) => {
 
 route('POST', /^\/api\/guess$/, async (req, res, player) => {
   const body = await readBody(req);
-  const round = q.activeRound.get();
-  if (round && round.host_id === player.id) return fail(res, 403, "The host doesn't play — they judge");
-  const s = round && q.openSession.get(round.id);
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(Number(body.roundId));
+  if (!round) return fail(res, 404, 'No such round');
+  if (round.host_id === player.id) return fail(res, 403, "The host doesn't play — they judge");
+  const s = q.openSession.get(round.id);
   const cur = s && q.currentQuestion.get(s.id);
   if (!cur || cur.phase !== 'guessing') return fail(res, 409, 'Not accepting guesses right now');
   // Empty string = an explicit pass; still counts as participating (capped at 1 pt).
@@ -555,9 +564,10 @@ route('POST', /^\/api\/guess$/, async (req, res, player) => {
 
 route('POST', /^\/api\/choice$/, async (req, res, player) => {
   const body = await readBody(req);
-  const round = q.activeRound.get();
-  if (round && round.host_id === player.id) return fail(res, 403, "The host doesn't play — they judge");
-  const s = round && q.openSession.get(round.id);
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(Number(body.roundId));
+  if (!round) return fail(res, 404, 'No such round');
+  if (round.host_id === player.id) return fail(res, 403, "The host doesn't play — they judge");
+  const s = q.openSession.get(round.id);
   const cur = s && q.currentQuestion.get(s.id);
   if (!cur || cur.phase !== 'choosing') return fail(res, 409, 'Not accepting picks right now');
   const idx = Number(body.choice);
@@ -571,6 +581,8 @@ route('POST', /^\/api\/choice$/, async (req, res, player) => {
 });
 
 // --- host: rounds ---
+// Any number of rounds can run at once — e.g. Eric hosting Bird Trivia and Nina hosting her
+// own topic, the same day, each asking questions on their own cadence.
 
 route('POST', /^\/api\/host\/round$/, async (req, res, player) => {
   const body = await readBody(req);
@@ -578,22 +590,28 @@ route('POST', /^\/api\/host\/round$/, async (req, res, player) => {
   if (!topic) return fail(res, 400, 'Topic required');
   const hostId = Number(body.hostId || player.id);
   if (!db.prepare('SELECT id FROM players WHERE id = ? AND deleted = 0').get(hostId)) return fail(res, 404, 'No such player');
-  const current = q.activeRound.get();
-  if (current) {
-    if (current.host_id !== player.id) return fail(res, 403, 'Only the current host can start a new round');
-    const s = q.openSession.get(current.id);
-    if (s) closeSession(s);
-    db.prepare(`UPDATE rounds SET status = 'archived' WHERE id = ?`).run(current.id);
-  }
   db.prepare('INSERT INTO rounds (topic, host_id) VALUES (?, ?)').run(topic, hostId);
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
+// Retire a round on purpose (its host, any time) — separate now from starting a new one,
+// since starting a new round no longer touches anyone else's round.
+route('POST', /^\/api\/host\/round\/(\d+)\/archive$/, async (req, res, player, m) => {
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(Number(m[1]));
+  if (!round || round.host_id !== player.id) return fail(res, 403, 'Host only');
+  if (round.status !== 'active') return fail(res, 409, 'Already archived');
+  const s = q.openSession.get(round.id);
+  if (s) closeSession(s);
+  db.prepare(`UPDATE rounds SET status = 'archived' WHERE id = ?`).run(round.id);
   broadcast();
   json(res, 200, { ok: true });
 });
 
 route('POST', /^\/api\/host\/transfer$/, async (req, res, player) => {
   const body = await readBody(req);
-  const round = q.activeRound.get();
-  if (!round || round.host_id !== player.id) return fail(res, 403, 'Only the host can transfer hosting');
+  const round = requireHostOfRound(res, player, body.roundId);
+  if (!round) return;
   if (!db.prepare('SELECT id FROM players WHERE id = ? AND deleted = 0').get(Number(body.playerId))) return fail(res, 404, 'No such player');
   db.prepare('UPDATE rounds SET host_id = ? WHERE id = ?').run(Number(body.playerId), round.id);
   broadcast();
@@ -602,9 +620,28 @@ route('POST', /^\/api\/host\/transfer$/, async (req, res, player) => {
 
 // --- host: questions ---
 
-function requireHost(res, player) {
-  const round = q.activeRound.get();
+// For actions scoped to a specific round named by the client (create question, transfer,
+// import, end session). Defaults to requiring the round still be active.
+function requireHostOfRound(res, player, roundId, opts = {}) {
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(Number(roundId));
   if (!round || round.host_id !== player.id) { fail(res, 403, 'Host only'); return null; }
+  if (opts.mustBeActive !== false && round.status !== 'active') { fail(res, 409, 'That round has been archived'); return null; }
+  return round;
+}
+
+// For actions on an existing question, where the round is implied by the question itself
+// (edit/delete/start/advance/recall) — a host only ever touches their own round's questions.
+function hostRoundForQuestion(res, player, question) {
+  if (!question) { fail(res, 404, 'No such question'); return null; }
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(question.round_id);
+  if (!round || round.host_id !== player.id) { fail(res, 403, 'Host only'); return null; }
+  return round;
+}
+
+// For actions that just need proof the caller hosts *something* active (player management).
+function requireAnyHost(res, player) {
+  const round = db.prepare(`SELECT * FROM rounds WHERE status = 'active' AND host_id = ? ORDER BY id DESC LIMIT 1`).get(player.id);
+  if (!round) { fail(res, 403, 'Host only'); return null; }
   return round;
 }
 
@@ -618,9 +655,9 @@ function parseQuestionBody(body) {
 }
 
 route('POST', /^\/api\/host\/question$/, async (req, res, player) => {
-  const round = requireHost(res, player);
-  if (!round) return;
   const body = await readBody(req);
+  const round = requireHostOfRound(res, player, body.roundId);
+  if (!round) return;
   const parsed = parseQuestionBody(body);
   if (parsed.error) return fail(res, 400, parsed.error);
   const { choices, correctIndex } = shuffleIn(parsed.answer, parsed.decoys);
@@ -647,10 +684,10 @@ route('POST', /^\/api\/host\/question$/, async (req, res, player) => {
 });
 
 route('POST', /^\/api\/host\/question\/(\d+)\/update$/, async (req, res, player, m) => {
-  const round = requireHost(res, player);
-  if (!round) return;
   const question = q.question.get(Number(m[1]));
-  if (!question || question.phase !== 'draft') return fail(res, 409, 'Can only edit unasked questions');
+  const round = hostRoundForQuestion(res, player, question);
+  if (!round) return;
+  if (question.phase !== 'draft') return fail(res, 409, 'Can only edit unasked questions');
   const body = await readBody(req);
   const parsed = parseQuestionBody(body);
   if (parsed.error) return fail(res, 400, parsed.error);
@@ -678,20 +715,21 @@ route('POST', /^\/api\/host\/question\/(\d+)\/update$/, async (req, res, player,
 });
 
 route('POST', /^\/api\/host\/question\/(\d+)\/delete$/, async (req, res, player, m) => {
-  const round = requireHost(res, player);
-  if (!round) return;
   const question = q.question.get(Number(m[1]));
-  if (!question || question.phase !== 'draft') return fail(res, 409, 'Can only delete unasked questions');
+  const round = hostRoundForQuestion(res, player, question);
+  if (!round) return;
+  if (question.phase !== 'draft') return fail(res, 409, 'Can only delete unasked questions');
   db.prepare('DELETE FROM questions WHERE id = ?').run(question.id);
   broadcast();
   json(res, 200, { ok: true });
 });
 
 route('POST', /^\/api\/host\/question\/(\d+)\/start$/, async (req, res, player, m) => {
-  const round = requireHost(res, player);
-  if (!round) return;
   const question = q.question.get(Number(m[1]));
-  if (!question || question.round_id !== round.id || question.phase !== 'draft') return fail(res, 409, 'Question not startable');
+  const round = hostRoundForQuestion(res, player, question);
+  if (!round) return;
+  if (round.status !== 'active') return fail(res, 409, 'That round has been archived');
+  if (question.phase !== 'draft') return fail(res, 409, 'Question not startable');
   const s = ensureTodaySession(round);
   const cur = q.currentQuestion.get(s.id);
   if (cur) {
@@ -724,10 +762,10 @@ function advanceQuestion(question) {
 }
 
 route('POST', /^\/api\/host\/question\/(\d+)\/advance$/, async (req, res, player, m) => {
-  const round = requireHost(res, player);
-  if (!round) return;
   const question = q.question.get(Number(m[1]));
-  if (!question || !advanceQuestion(question)) return fail(res, 409, 'Cannot advance from this phase');
+  const round = hostRoundForQuestion(res, player, question);
+  if (!round) return;
+  if (!advanceQuestion(question)) return fail(res, 409, 'Cannot advance from this phase');
   broadcast();
   json(res, 200, { ok: true });
 });
@@ -736,8 +774,9 @@ route('POST', /^\/api\/host\/question\/(\d+)\/advance$/, async (req, res, player
 // Deputies never see answers; auto-judge grades guesses and the host can flip calls later.
 
 route('POST', /^\/api\/deputy\/start$/, async (req, res, player) => {
-  const round = q.activeRound.get();
-  if (!round) return fail(res, 409, 'No active round');
+  const body = await readBody(req);
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(Number(body.roundId));
+  if (!round || round.status !== 'active') return fail(res, 409, 'No such active round');
   const s = ensureTodaySession(round);
   const cur = q.currentQuestion.get(s.id);
   if (cur) {
@@ -754,7 +793,7 @@ route('POST', /^\/api\/deputy\/start$/, async (req, res, player) => {
 
 route('POST', /^\/api\/deputy\/advance$/, async (req, res, player) => {
   const body = await readBody(req);
-  const round = q.activeRound.get();
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(Number(body.roundId));
   const s = round && q.openSession.get(round.id);
   const cur = s && q.currentQuestion.get(s.id);
   if (!cur) return fail(res, 409, 'No question in play');
@@ -768,10 +807,10 @@ route('POST', /^\/api\/deputy\/advance$/, async (req, res, player) => {
 // Claw back an in-progress question to the draft queue for editing.
 // Guesses submitted so far are discarded — it's a full redo when re-asked.
 route('POST', /^\/api\/host\/question\/(\d+)\/recall$/, async (req, res, player, m) => {
-  const round = requireHost(res, player);
-  if (!round) return;
   const question = q.question.get(Number(m[1]));
-  if (!question || question.round_id !== round.id || !['guessing', 'reveal', 'choosing'].includes(question.phase)) {
+  const round = hostRoundForQuestion(res, player, question);
+  if (!round) return;
+  if (!['guessing', 'reveal', 'choosing'].includes(question.phase)) {
     return fail(res, 409, 'Can only claw back a question that is in progress');
   }
   db.prepare('DELETE FROM answers WHERE question_id = ?').run(question.id);
@@ -806,9 +845,9 @@ function parseImportDate(s) {
 }
 
 route('POST', /^\/api\/host\/import$/, async (req, res, player) => {
-  const round = requireHost(res, player);
-  if (!round) return;
   const body = await readBody(req);
+  const round = requireHostOfRound(res, player, body.roundId);
+  if (!round) return;
   const lines = String(body.text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   if (!lines.length) return fail(res, 400, 'Nothing to import');
   if (lines.length > 2000) return fail(res, 400, 'Too many lines (max 2000)');
@@ -845,7 +884,8 @@ route('POST', /^\/api\/host\/import$/, async (req, res, player) => {
 });
 
 route('POST', /^\/api\/host\/import\/clear$/, async (req, res, player) => {
-  const round = requireHost(res, player);
+  const body = await readBody(req);
+  const round = requireHostOfRound(res, player, body.roundId);
   if (!round) return;
   const n = db.prepare('DELETE FROM legacy_points WHERE round_id = ?').run(round.id);
   broadcast();
@@ -854,10 +894,11 @@ route('POST', /^\/api\/host\/import\/clear$/, async (req, res, player) => {
 
 // Soft-delete / restore players (e.g. test accounts). Answers stay; stats ignore them.
 route('POST', /^\/api\/host\/player\/(\d+)\/delete$/, async (req, res, player, m) => {
-  const round = requireHost(res, player);
-  if (!round) return;
+  if (!requireAnyHost(res, player)) return;
   const target = Number(m[1]);
-  if (target === round.host_id) return fail(res, 409, "Can't delete the current host");
+  if (db.prepare(`SELECT 1 FROM rounds WHERE host_id = ? AND status = 'active'`).get(target)) {
+    return fail(res, 409, "Can't delete a player who's currently hosting a round");
+  }
   if (!db.prepare('SELECT id FROM players WHERE id = ? AND deleted = 0').get(target)) return fail(res, 404, 'No such player');
   db.prepare('UPDATE players SET deleted = 1 WHERE id = ?').run(target);
   db.prepare('DELETE FROM tokens WHERE player_id = ?').run(target);
@@ -866,8 +907,7 @@ route('POST', /^\/api\/host\/player\/(\d+)\/delete$/, async (req, res, player, m
 });
 
 route('POST', /^\/api\/host\/player\/(\d+)\/restore$/, async (req, res, player, m) => {
-  const round = requireHost(res, player);
-  if (!round) return;
+  if (!requireAnyHost(res, player)) return;
   if (!db.prepare('SELECT id FROM players WHERE id = ? AND deleted = 1').get(Number(m[1]))) return fail(res, 404, 'No such deleted player');
   db.prepare('UPDATE players SET deleted = 0 WHERE id = ?').run(Number(m[1]));
   broadcast();
@@ -895,7 +935,8 @@ route('POST', /^\/api\/host\/judge$/, async (req, res, player) => {
 });
 
 route('POST', /^\/api\/host\/session\/end$/, async (req, res, player) => {
-  const round = requireHost(res, player);
+  const body = await readBody(req);
+  const round = requireHostOfRound(res, player, body.roundId);
   if (!round) return;
   const s = q.openSession.get(round.id);
   if (!s) return fail(res, 409, 'No open game today');

@@ -10,7 +10,7 @@ const S = {
   token: (IS_TV ? localStorage.getItem('tt_tv_token') : localStorage.getItem('tt_token')) || null,
   me: JSON.parse(localStorage.getItem('tt_me') || 'null'),
   view: 'game',              // game | history | stats
-  game: null,                // /api/state payload
+  game: null,                // /api/state payload — game.rounds is an array; any number can be active
   loginPlayers: null,        // player list after password verified
   loginPassword: '',
   history: null,
@@ -18,7 +18,8 @@ const S = {
   makeup: null,              // {questionId, data} active makeup flow
   stats: null,
   statsRound: 'all',
-  err: {},                   // keyed error messages
+  err: {},                   // keyed error messages, keyed per-round where relevant ("game:12", "host:12"...)
+  celebratedQs: new Set(),   // question ids already confetti'd, across all rounds
 };
 
 const AV_COLORS = ['#3574e3', '#ff5050', '#3d4fd7', '#a8850b', '#1b24a2', '#797575', '#050039', '#444444'];
@@ -88,7 +89,7 @@ async function refresh() {
 }
 window.addEventListener('focus', refresh);
 
-// ---------- bird background (VANTA.BIRDS, login screen only) ----------
+// ---------- bird background (VANTA.BIRDS, every screen) ----------
 
 let birdBgEffect = null;
 // Enabled by default; remembers the user's choice (per-browser) once they toggle it.
@@ -172,24 +173,27 @@ function confettiBurst(points) {
   })();
 }
 
-// Fire once per question when results land and I scored. Two-pointers get an encore.
-// The TV celebrates whenever anyone scored.
+// Fire once per question, per round, when results land and I scored. Two-pointers get an
+// encore. The TV celebrates whenever anyone scored, in any round.
 function maybeCelebrate() {
-  const qq = S.game && S.game.question;
-  if (!qq || qq.phase !== 'results' || qq.locked || S.celebratedQ === qq.id) return;
-  S.celebratedQ = qq.id;
-  if (IS_TV) {
-    const best = Math.max(0, ...(qq.answers || []).map(a => a.points || 0));
-    if (best > 0) {
-      confettiBurst(best);
-      if (best === 2) setTimeout(() => confettiBurst(2), 450);
+  const rounds = (S.game && S.game.rounds) || [];
+  for (const r of rounds) {
+    const qq = r.question;
+    if (!qq || qq.phase !== 'results' || qq.locked || S.celebratedQs.has(qq.id)) continue;
+    S.celebratedQs.add(qq.id);
+    if (IS_TV) {
+      const best = Math.max(0, ...(qq.answers || []).map(a => a.points || 0));
+      if (best > 0) {
+        confettiBurst(best);
+        if (best === 2) setTimeout(() => confettiBurst(2), 450);
+      }
+      continue;
     }
-    return;
-  }
-  const mine = (qq.answers || []).find(a => a.playerId === S.game.me.id);
-  if (mine && mine.points > 0) {
-    confettiBurst(mine.points);
-    if (mine.points === 2) setTimeout(() => confettiBurst(2), 450);
+    const mine = (qq.answers || []).find(a => a.playerId === S.game.me.id);
+    if (mine && mine.points > 0) {
+      confettiBurst(mine.points);
+      if (mine.points === 2) setTimeout(() => confettiBurst(2), 450);
+    }
   }
 }
 
@@ -217,11 +221,14 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Animations replay only when the question/phase actually changes, not on every
-// SSE refresh — track a phase key and mark the render "fresh" on transitions.
+// Animations replay only when some round's phase actually changes, not on every SSE refresh —
+// track a combined key across all rounds and mark the render "fresh" on any transition.
 function checkAnimFresh() {
-  const qq = S.game && S.game.question;
-  const key = qq ? `${qq.id}:${qq.phase}:${qq.locked ? 1 : 0}` : 'idle';
+  const rounds = (S.game && S.game.rounds) || [];
+  const key = rounds.map(r => {
+    const qq = r.question;
+    return `${r.id}:${qq ? qq.id : 0}:${qq ? qq.phase : ''}:${qq && qq.locked ? 1 : 0}`;
+  }).join('|');
   S.animFresh = key !== S.renderedPhaseKey;
   S.renderedPhaseKey = key;
 }
@@ -242,14 +249,18 @@ function render() {
   if (!S.game) { $app.innerHTML = '<div class="empty">Loading…</div>'; return; }
 
   const g = S.game;
-  // Spotlight is a layout choice (center the live question, hide the sidebar) — independent
-  // of the birds, which are always on now.
-  const spotlight = S.view === 'game' && !!g.question && g.question.phase === 'guessing' && !g.question.locked;
+  const rounds = g.rounds || [];
+  // Spotlight is a layout choice (center the one live question, hide the sidebar) — kept for
+  // the common case of a single round guessing at once; independent of the birds.
+  const guessingNow = rounds.filter(r => r.question && r.question.phase === 'guessing' && !r.question.locked);
+  const spotlight = S.view === 'game' && guessingNow.length === 1;
   document.body.classList.toggle('spotlight', spotlight);
+  const topicPill = rounds.length === 1 ? `<div class="topic">${esc(rounds[0].topic)}</div>`
+    : rounds.length > 1 ? `<div class="topic">${rounds.length} rounds live</div>` : '';
   $app.innerHTML = `
     <header>
       <div class="logo">Totally <span>Trivia</span></div>
-      ${g.round ? `<div class="topic">${esc(g.round.topic)}</div>` : ''}
+      ${topicPill}
       <div class="spacer"></div>
       <div class="whoami">
         <button class="ghost" onclick="S.showBirdPicker=!S.showBirdPicker;render()" title="Change your bird">${avatar(g.me.name, g.me.emoji)} ${esc(g.me.name)}</button>${g.isHost ? '<b>host</b>' : ''}
@@ -311,22 +322,25 @@ function renderTV() {
   if (!S.game) { $app.innerHTML = '<div class="empty">Loading…</div>'; return; }
   checkAnimFresh();
   const g = S.game;
-  const qq = g.question;
-  const main = !g.round
+  const rounds = g.rounds || [];
+  const guessingNow = rounds.filter(r => r.question && r.question.phase === 'guessing' && !r.question.locked);
+  const main = !rounds.length
     ? '<div class="card empty">No round yet — waiting for a host.</div>'
-    : !qq
-      ? tvIdle()
-      : ({ guessing: tvGuessing, reveal: tvReveal, choosing: tvChoosing, results: tvResults }[qq.phase] || tvIdle)(qq);
+    : guessingNow.length === 1
+      ? tvRoundBlock(guessingNow[0])
+      : rounds.map(tvRoundBlock).join('');
+  const topicPill = rounds.length === 1 ? `<div class="topic">${esc(rounds[0].topic)}</div>`
+    : rounds.length > 1 ? `<div class="topic">${rounds.length} rounds live</div>` : '';
   $app.innerHTML = `
     <header>
       <div class="logo">Totally <span>Trivia</span></div>
-      ${g.round ? `<div class="topic">${esc(g.round.topic)}</div>` : ''}
+      ${topicPill}
       <div class="spacer"></div>
       <div class="whoami muted">TV mode</div>
     </header>
     <div class="game-layout">
       <div class="${S.animFresh ? 'anim' : ''}">${main}</div>
-      <div>${renderScoreboard()}${renderPresenceCard()}</div>
+      <div>${renderPresenceCard()}</div>
     </div>`;
 }
 
@@ -341,19 +355,27 @@ async function tvLogin() {
   } catch (e) { S.err.login = e.message; render(); }
 }
 
-function tvIdle() {
-  const g = S.game;
+function tvRoundBlock(round) {
+  const qq = round.question;
+  const label = `<p class="small muted" style="margin-bottom:6px">${esc(round.topic)} · hosted by ${esc(round.hostName)}</p>`;
+  if (!qq) return label + tvIdle(round);
+  const fn = { guessing: tvGuessing, reveal: tvReveal, choosing: tvChoosing, results: tvResults }[qq.phase];
+  return label + (fn ? fn(qq, round) : '');
+}
+
+function tvIdle(round) {
+  const queued = typeof round.drafts?.count === 'number' ? round.drafts.count : 0;
   return `<div class="card empty" style="padding:60px 20px">
-    <div class="question-text" style="margin-bottom:8px">Waiting for ${esc(g.round.hostName)} to launch the next question</div>
-    ${typeof g.drafts?.count === 'number' && g.drafts.count > 0 ? `<p class="muted">${g.drafts.count} question${g.drafts.count > 1 ? 's' : ''} in the queue</p>` : ''}
+    <div class="question-text" style="margin-bottom:8px">Waiting for ${esc(round.hostName)} to launch the next question</div>
+    ${queued > 0 ? `<p class="muted">${queued} question${queued > 1 ? 's' : ''} in the queue</p>` : ''}
   </div>`;
 }
 
-function tvGuessing(qq) {
+function tvGuessing(qq, round) {
   return `<div class="card">
     <span class="phase-tag guessing">Guessing time — answers are hidden</span>
     <div class="question-text">${esc(qq.text)}</div>
-    ${playerChips(qq, a => a.hasGuess, 'guesses in')}
+    ${playerChips(qq, a => a.hasGuess, 'guesses in', round)}
   </div>`;
 }
 
@@ -371,14 +393,14 @@ function tvReveal(qq) {
   </div>`;
 }
 
-function tvChoosing(qq) {
+function tvChoosing(qq, round) {
   return `<div class="card">
     <span class="phase-tag choosing">Multiple choice — stick with your guess for 2</span>
     <div class="question-text">${esc(qq.text)}</div>
     <div class="choices">
       ${qq.choices.map((c, i) => `<button class="static"><span class="letter">${'ABCD'[i] || i + 1}</span> ${esc(c)}</button>`).join('')}
     </div>
-    ${playerChips(qq, a => a.hasChoice, 'locked in')}
+    ${playerChips(qq, a => a.hasChoice, 'locked in', round)}
   </div>`;
 }
 
@@ -463,25 +485,41 @@ async function doCreate() {
 
 function renderGame() {
   const g = S.game;
-  if (!g.round) return renderNoRound();
-
   checkAnimFresh();
-  const qq = g.question;
+  const rounds = g.rounds || [];
+  const guessingNow = rounds.filter(r => r.question && r.question.phase === 'guessing' && !r.question.locked);
 
-  // The moment a question starts: just the question, centered, birds behind it.
-  // Everything else (scoreboard, host desk) steps aside until the reveal.
-  if (qq && qq.phase === 'guessing' && !qq.locked) {
-    return `<div class="spotlight-stage ${S.animFresh ? 'anim' : ''}">${renderGuessing(qq)}</div>`;
+  // The moment exactly one round starts a question: just that question, centered, birds
+  // behind it. If two rounds are guessing at once there's no single thing to spotlight,
+  // so it falls back to the normal stacked layout below.
+  if (guessingNow.length === 1) {
+    const r = guessingNow[0];
+    return `<div class="spotlight-stage ${S.animFresh ? 'anim' : ''}">
+      <p class="small muted" style="text-align:center;margin-bottom:8px">${esc(r.topic)}</p>
+      ${renderGuessing(r.question, r)}
+    </div>`;
   }
 
-  // A question in results is over: lead with "what's next", recap the results below.
-  const inResults = qq && qq.phase === 'results';
-  const live = qq && !inResults ? renderQuestion() : '';
-  const between = !qq || inResults ? renderBetweenQuestions() : '';
-  const recent = inResults ? (qq.locked ? renderLockedResults(qq, true) : renderResults(qq, true)) : '';
   return `<div class="game-layout">
-    <div class="${S.animFresh ? 'anim' : ''}">${live}${between}${g.isHost ? renderHostTools() : ''}${recent}</div>
-    <div>${renderScoreboard()}${renderPresenceCard()}${renderMakeupsCard()}</div>
+    <div class="${S.animFresh ? 'anim' : ''}">
+      ${renderStartRoundCard(rounds.length > 0)}
+      ${rounds.length ? rounds.map(renderRoundBlock).join('') : ''}
+    </div>
+    <div>${renderPresenceCard()}${renderMakeupsCard()}</div>
+  </div>`;
+}
+
+// One round's whole card stack: header/score, live question or waiting state, host tools,
+// and a recap of the last question once it's in results.
+function renderRoundBlock(round) {
+  const qq = round.question;
+  const inResults = qq && qq.phase === 'results';
+  const live = qq && !inResults ? renderQuestion(round) : '';
+  const between = !qq || inResults ? renderBetweenQuestions(round) : '';
+  const recent = inResults ? (qq.locked ? renderLockedResults(qq, true) : renderResults(qq, round, true)) : '';
+  return `<div class="round-block">
+    ${renderScoreboard(round)}
+    ${live}${between}${round.isHost ? renderHostTools(round) : ''}${recent}
   </div>`;
 }
 
@@ -511,13 +549,14 @@ function renderPresenceCard() {
 }
 
 function renderMakeupsCard() {
-  const list = S.game.makeups || [];
+  const rounds = S.game.rounds || [];
+  const list = rounds.flatMap(r => (r.makeups || []).map(m => ({ ...m, topic: r.topic })));
   if (!list.length) return '';
   return `<div class="card">
     <h2>Your makeups (${list.length})</h2>
-    <p class="small muted">Questions you missed in ${esc(S.game.round.topic)}. Their answers stay hidden until you play them.</p>
+    <p class="small muted">Questions you missed. Their answers stay hidden until you play them.</p>
     <ul class="scoreboard">
-      ${list.map(m => `<li>${esc(m.date)} · Question ${m.qnum}<span style="margin-left:auto"><button onclick="playMakeup(${m.id})">Play</button></span></li>`).join('')}
+      ${list.map(m => `<li>${esc(m.topic)} · ${esc(m.date)} · Question ${m.qnum}<span style="margin-left:auto"><button onclick="playMakeup(${m.id})">Play</button></span></li>`).join('')}
     </ul>
   </div>`;
 }
@@ -529,63 +568,73 @@ async function playMakeup(qid) {
   await startMakeup(qid);
 }
 
-function renderNoRound() {
+// Always-available "start a round" entry point — compact (a toggle link) once at least one
+// round is already active, expanded by default when there are none yet.
+function renderStartRoundCard(compact) {
+  if (compact && !S.showStartRound) {
+    return `<p class="mt"><button class="ghost" onclick="S.showStartRound=true;render()">+ Start another round</button></p>`;
+  }
   return `<div class="card">
-    <h2>No round yet</h2>
-    <p class="muted">Kick things off — whoever creates the round becomes its host.</p>
+    <h2>${compact ? 'Start another round' : 'No round yet'}</h2>
+    <p class="muted">${compact ? 'Runs alongside whatever else is already going — pick a topic and a host.' : 'Kick things off — whoever creates the round becomes its host.'}</p>
     <div class="mt">
       <label for="topic0">Topic</label>
       <input type="text" id="topic0" placeholder="e.g. Bird Trivia" value="${esc(val('topic0'))}">
-      <div class="err">${esc(S.err.round || '')}</div>
-      <button class="primary" onclick="createRound('topic0')">Start the round</button>
+      ${(S.game.players || []).length ? `<label class="mt">Host</label>
+      <select id="hostSel0">${S.game.players.map(p => `<option value="${p.id}" ${p.id === S.game.me.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}
+      <div class="err">${esc(S.err.startRound || '')}</div>
+      <div class="row mt">
+        <button class="primary" onclick="createRound()">Start the round</button>
+        ${compact ? '<button class="ghost" onclick="S.showStartRound=false;render()">Cancel</button>' : ''}
+      </div>
     </div>
   </div>`;
 }
 
-function renderScoreboard() {
-  const g = S.game;
-  const rows = g.todayScores || [];
+function renderScoreboard(round) {
+  const rows = round.todayScores || [];
   return `<div class="card">
-    <h2>Today${g.session ? ` · ${esc(g.session.date)}` : ''}</h2>
+    <div class="row" style="margin-bottom:8px">
+      <h2 class="grow">${esc(round.topic)}${round.session ? ` · ${esc(round.session.date)}` : ''}</h2>
+    </div>
     ${rows.length ? `<ul class="scoreboard">
       ${rows.map((r, i) => `<li><span class="pos">${i + 1}</span>${avatar(r.name, r.emoji)} ${esc(r.name)}
         <span class="pts ${r.points >= 2 ? 'two' : r.points ? 'one' : 'zero'}">${r.points}</span></li>`).join('')}
     </ul>` : '<p class="muted small">No points yet today.</p>'}
-    <p class="small muted mt">Host: ${esc(g.round.hostName)}</p>
+    <p class="small muted mt">Host: ${esc(round.hostName)}${round.isHost ? ' (you)' : ''}</p>
   </div>`;
 }
 
-function renderBetweenQuestions() {
-  const g = S.game;
-  if (g.isHost) return ''; // host sees their tools below
-  const queued = typeof g.drafts?.count === 'number' ? g.drafts.count : 0;
+function renderBetweenQuestions(round) {
+  if (round.isHost) return ''; // host sees their tools below
+  const queued = typeof round.drafts?.count === 'number' ? round.drafts.count : 0;
   return `<div class="card empty">
-    Waiting for ${esc(g.round.hostName)} to launch the next question…
+    Waiting for ${esc(round.hostName)} to launch the next question…
     ${queued > 0 ? `<p class="small mt">${queued} question${queued > 1 ? 's' : ''} in the queue</p>
-    <p class="mt"><button onclick="deputyStart()">Host away? Start the next question</button></p>` : ''}
+    <p class="mt"><button onclick="deputyStart(${round.id})">Host away? Start the next question</button></p>` : ''}
   </div>`;
 }
 
-function deputyBar(fromPhase, label) {
-  if (S.game.isHost) return '';
-  return `<div class="mt" style="text-align:right"><button class="ghost" onclick="deputyAdv('${fromPhase}')">Host away? ${label}</button></div>`;
+function deputyBar(round, fromPhase, label) {
+  if (round.isHost) return '';
+  return `<div class="mt" style="text-align:right"><button class="ghost" onclick="deputyAdv(${round.id},'${fromPhase}')">Host away? ${label}</button></div>`;
 }
 
-function deputyStart() {
+function deputyStart(roundId) {
   if (!confirm('Start the next question without the host? Guesses get auto-judged; the host can fix close calls later from History.')) return;
-  act(() => api('/api/deputy/start', {}));
+  act(() => api('/api/deputy/start', { roundId }));
 }
 
-function deputyAdv(fromPhase) {
+function deputyAdv(roundId, fromPhase) {
   if (!confirm('Advance the game for everyone?')) return;
-  act(() => api('/api/deputy/advance', { fromPhase }));
+  act(() => api('/api/deputy/advance', { roundId, fromPhase }));
 }
 
-function renderQuestion() {
-  const qq = S.game.question;
+function renderQuestion(round) {
+  const qq = round.question;
   if (qq.locked) return renderLockedResults(qq, false);
   const fn = { guessing: renderGuessing, reveal: renderReveal, choosing: renderChoosing, results: renderResults }[qq.phase];
-  return fn ? fn(qq) : '';
+  return fn ? fn(qq, round) : '';
 }
 
 function renderLockedResults(qq, recent) {
@@ -600,9 +649,9 @@ function renderLockedResults(qq, recent) {
   </div>`;
 }
 
-function playerChips(qq, doneFn, verb) {
+function playerChips(qq, doneFn, verb, round) {
   return `<div class="waiting-list">
-    ${S.game.players.filter(p => p.id !== S.game.round.hostId).map(p => {
+    ${S.game.players.filter(p => p.id !== round.hostId).map(p => {
       const a = qq.answers.find(x => x.playerId === p.id);
       const done = a && doneFn(a);
       return `<span class="chip ${done ? 'done' : ''}">${avatar(p.name, p.emoji)} ${esc(p.name)} <span class="presdot ${presenceOf(p.id)}"></span> ${done ? '<span class="tick">✓</span>' : ''}</span>`;
@@ -611,28 +660,29 @@ function playerChips(qq, doneFn, verb) {
   <p class="small muted mt">${qq.answers.filter(doneFn).length} ${verb}</p>`;
 }
 
-function renderGuessing(qq) {
+function renderGuessing(qq, round) {
   const mine = qq.myAnswer ? qq.myAnswer.guess : null;
   const hasMine = mine !== null && mine !== undefined;
+  const errKey = `game:${round.id}`;
   return `<div class="card">
     <span class="phase-tag guessing">Write your guess</span>
     <div class="question-text">${esc(qq.text)}</div>
-    ${S.game.isHost ? '<p class="small muted">Read it out — you judge, you don\'t play.</p>' : `<div class="row">
-      <input type="text" id="guess" class="grow" placeholder="Your guess — nobody sees it until the reveal"
-        value="${esc(val('guess') || mine || '')}" onkeydown="if(event.key==='Enter')submitGuess()">
-      <button class="primary" onclick="submitGuess()">${hasMine ? 'Update' : 'Lock it in'}</button>
-      <button onclick="passGuess()" title="Skip the written guess — you can still answer the multiple choice for 1 point">Pass</button>
+    ${round.isHost ? '<p class="small muted">Read it out — you judge, you don\'t play.</p>' : `<div class="row">
+      <input type="text" id="guess-${round.id}" class="grow" placeholder="Your guess — nobody sees it until the reveal"
+        value="${esc(val('guess-' + round.id) || mine || '')}" onkeydown="if(event.key==='Enter')submitGuess(${round.id})">
+      <button class="primary" onclick="submitGuess(${round.id})">${hasMine ? 'Update' : 'Lock it in'}</button>
+      <button onclick="passGuess(${round.id})" title="Skip the written guess — you can still answer the multiple choice for 1 point">Pass</button>
     </div>
     ${hasMine ? `<p class="small muted mt">Your guess is in: <b>${mine === '' ? '(passed)' : esc(mine)}</b> — you can change it until the reveal.</p>` : ''}
-    <div class="err">${esc(S.err.game || '')}</div>`}
-    ${playerChips(qq, a => a.hasGuess, 'guesses in')}
-    ${hostAdvance(qq, 'guessing', 'Reveal all guesses')}
-    ${deputyBar('guessing', 'Reveal all guesses')}
+    <div class="err">${esc(S.err[errKey] || '')}</div>`}
+    ${playerChips(qq, a => a.hasGuess, 'guesses in', round)}
+    ${hostAdvance(qq, round, 'Reveal all guesses')}
+    ${deputyBar(round, 'guessing', 'Reveal all guesses')}
   </div>`;
 }
 
-function renderReveal(qq) {
-  const isHost = S.game.isHost;
+function renderReveal(qq, round) {
+  const isHost = round.isHost;
   return `<div class="card">
     <span class="phase-tag reveal">The reveal</span>
     <div class="question-text">${esc(qq.text)}</div>
@@ -648,28 +698,29 @@ function renderReveal(qq) {
         </div>`).join('')}
     </div>` : '<p class="muted">Nobody guessed! Tough crowd.</p>'}
     ${isHost ? `<p class="small muted mt">Green = counts as a correct guess (auto-judged — fix any I got wrong). Answer: <b>${esc(qq.answer)}</b></p>` : ''}
-    ${hostAdvance(qq, 'reveal', 'Open multiple choice')}
-    ${deputyBar('reveal', 'Open multiple choice')}
+    ${hostAdvance(qq, round, 'Open multiple choice')}
+    ${deputyBar(round, 'reveal', 'Open multiple choice')}
   </div>`;
 }
 
-function renderChoosing(qq) {
+function renderChoosing(qq, round) {
   const mine = qq.myAnswer?.choiceIndex;
   const myGuess = qq.myAnswer?.guess;
+  const errKey = `game:${round.id}`;
   return `<div class="card">
     <span class="phase-tag choosing">Multiple choice — stick with your guess for 2</span>
     <div class="question-text">${esc(qq.text)}</div>
     ${myGuess != null ? `<p class="small muted" style="margin-bottom:10px">You guessed: <b>${myGuess === '' ? '(passed)' : esc(myGuess)}</b></p>` : ''}
     <div class="choices">
       ${qq.choices.map((c, i) => `
-        <button class="${mine === i ? 'mine' : ''} ${S.game.isHost ? 'static' : ''} ${S.game.isHost && qq.correctIndex === i ? 'host-correct' : ''}" ${S.game.isHost ? '' : `onclick="submitChoice(${i})"`}>
+        <button class="${mine === i ? 'mine' : ''} ${round.isHost ? 'static' : ''} ${round.isHost && qq.correctIndex === i ? 'host-correct' : ''}" ${round.isHost ? '' : `onclick="submitChoice(${round.id},${i})"`}>
           <span class="letter">${'ABCD'[i] || i + 1}</span> ${esc(c)}
         </button>`).join('')}
     </div>
-    <div class="err">${esc(S.err.game || '')}</div>
-    ${playerChips(qq, a => a.hasChoice, 'locked in')}
-    ${hostAdvance(qq, 'choosing', 'Show results')}
-    ${deputyBar('choosing', 'Show results')}
+    <div class="err">${esc(S.err[errKey] || '')}</div>
+    ${playerChips(qq, a => a.hasChoice, 'locked in', round)}
+    ${hostAdvance(qq, round, 'Show results')}
+    ${deputyBar(round, 'choosing', 'Show results')}
   </div>`;
 }
 
@@ -692,7 +743,7 @@ function resultRow(a, qq, canJudge) {
 
 // Full results table: everyone who answered, then anyone who missed it (makeup pending).
 function resultsTable(qq, canJudge) {
-  const hostId = qq.roundHostId ?? S.game.round?.hostId;
+  const hostId = qq.roundHostId;
   const covered = qq.covered || [];
   const missed = S.game.players.filter(p =>
     p.id !== hostId && !qq.answers.some(a => a.playerId === p.id) && !covered.some(c => c.id === p.id));
@@ -719,22 +770,22 @@ function callouts(qq) {
   return `<div class="callouts">${qq.callouts.map(c => `<div class="callout">${esc(c)}</div>`).join('')}</div>`;
 }
 
-function renderResults(qq, recent) {
+function renderResults(qq, round, recent) {
   return `<div class="card">
     <span class="phase-tag results">${recent ? 'Last question' : 'Results'}</span>
     <div class="question-text">${esc(qq.text)}</div>
     <div class="answer-banner">Answer: <b>${esc(qq.answer)}</b></div>
     ${callouts(qq)}
-    ${resultsTable(qq, S.game.isHost)}
-    ${S.game.isHost ? `<div class="mt row">
+    ${resultsTable(qq, round.isHost)}
+    ${round.isHost ? `<div class="mt row">
       <span class="small muted grow">Wrong call on a guess? Hit “flip” — points recalculate.</span>
       <button class="ghost danger" onclick="removeQ(${qq.id})" title="Botched question? Scrap it — it won't count for anyone">Scrap this question</button>
     </div>` : ''}
   </div>`;
 }
 
-function hostAdvance(qq, phase, label) {
-  if (!S.game.isHost) return '';
+function hostAdvance(qq, round, label) {
+  if (!round.isHost) return '';
   return `<div class="mt row">
     <button class="primary big" onclick="advance(${qq.id})">${label}</button>
     <span class="grow"></span>
@@ -745,25 +796,27 @@ function hostAdvance(qq, phase, label) {
 
 // ---------- host tools ----------
 
-function renderHostTools() {
-  const g = S.game;
-  const inQuestion = !!g.question;
-  const drafts = Array.isArray(g.drafts) ? g.drafts : [];
-  const editing = S.editingDraft;
+function renderHostTools(round) {
+  const drafts = Array.isArray(round.drafts) ? round.drafts : [];
+  const editingHere = S.editingDraft && S.composerRoundId === round.id;
+  const composerOpen = S.composerRoundId === round.id;
+  const hostErrKey = `host:${round.id}`;
+  const roundErrKey = `round:${round.id}`;
+  const importErrKey = `import:${round.id}`;
   return `<div class="card">
-    <h2>Host desk</h2>
+    <h2>Host desk — ${esc(round.topic)}</h2>
     ${drafts.length ? `<h3>Question queue</h3>
       ${drafts.map(d => `<div class="draft-item">
         <div class="q">${esc(d.text)}<div class="a muted small">answer hidden — Edit to view</div></div>
-        <button class="primary" ${inQuestion && g.question.phase !== 'results' ? 'disabled title="Finish the current question first"' : ''}
+        <button class="primary" ${round.question && round.question.phase !== 'results' ? 'disabled title="Finish the current question first"' : ''}
           onclick="startQ(${d.id})">Ask it</button>
-        <button onclick="editDraft(${d.id})">Edit</button>
+        <button onclick="editDraft(${d.id},${round.id})">Edit</button>
         <button class="danger" onclick="deleteQ(${d.id})">Delete</button>
       </div>`).join('')}` : '<p class="muted small">Queue is empty — add a question below.</p>'}
 
-    <details class="host-tools" ${drafts.length === 0 || editing ? 'open' : ''}>
-      <summary>${editing ? 'Edit question' : 'Add a question'}</summary>
-      <div>
+    <details class="host-tools" ${composerOpen ? 'open' : ''}>
+      <summary onclick="event.preventDefault();toggleComposer(${round.id})">${editingHere ? 'Edit question' : 'Add a question'}</summary>
+      ${composerOpen ? `<div>
         <label for="qtext">Question</label>
         <input type="text" id="qtext" placeholder="What bird can fly backwards?" value="${esc(val('qtext'))}">
         <label class="mt" for="qanswer">Correct answer</label>
@@ -775,54 +828,50 @@ function renderHostTools() {
         <label class="mt" for="qdate">Backdate (optional)</label>
         <input type="text" id="qdate" placeholder="YYYY-MM-DD — recreate a question from before the app" value="${esc(val('qdate'))}">
         <p class="small muted">Leave blank to queue it normally. With a date, it goes straight into that day's History as already played — people with imported points on that date are covered; everyone else gets it as a makeup.</p>
-        <div class="err">${esc(S.err.host || '')}</div>
+        <div class="err">${esc(S.err[hostErrKey] || '')}</div>
         ${S.hostMsg ? `<p class="small" style="color:var(--accent)">${esc(S.hostMsg)}</p>` : ''}
         <div class="row">
-          <button class="primary" onclick="saveQuestion()">${editing ? 'Save changes' : 'Add to queue'}</button>
-          ${editing ? '<button onclick="cancelEdit()">Cancel</button>' : ''}
+          <button class="primary" onclick="saveQuestion(${round.id})">${editingHere ? 'Save changes' : 'Add to queue'}</button>
+          <button onclick="cancelEdit()">Cancel</button>
         </div>
-      </div>
+      </div>` : ''}
     </details>
 
     <details class="host-tools">
       <summary>Round controls</summary>
       <div>
-        ${g.session ? `<button onclick="endSession()">End today's game</button>` : '<p class="muted small">Today\'s game starts automatically when you ask the first question.</p>'}
+        ${round.session ? `<button onclick="endSession(${round.id})">End today's game</button>` : '<p class="muted small">Today\'s game starts automatically when you ask the first question.</p>'}
         <div class="mt">
-          <label>Hand hosting of <b>${esc(g.round.topic)}</b> to…</label>
+          <label>Hand hosting of <b>${esc(round.topic)}</b> to…</label>
           <div class="row">
-            <select id="transferSel" class="grow">${g.players.filter(p => p.id !== g.me.id).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-            <button onclick="transferHost()">Transfer</button>
+            <select id="transferSel-${round.id}" class="grow">${S.game.players.filter(p => p.id !== round.hostId).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+            <button onclick="transferHost(${round.id})">Transfer</button>
           </div>
         </div>
         <div class="mt">
           <label>Manage players</label>
-          ${g.players.filter(p => p.id !== g.round.hostId).map(p => `<div class="row" style="margin-bottom:6px">${avatar(p.name, p.emoji)}<span class="grow">${esc(p.name)}</span><button class="danger" onclick="deletePlayer(${p.id})">Delete</button></div>`).join('') || '<p class="muted small">Nobody else has joined yet.</p>'}
-          ${(g.deletedPlayers || []).map(p => `<div class="row" style="margin-bottom:6px"><span class="grow muted">${esc(p.name)} (deleted)</span><button onclick="restorePlayer(${p.id})">Restore</button></div>`).join('')}
-          <p class="small muted">Deleting is soft: they vanish from the game and stats, but their answers are kept and restoring brings everything back.</p>
+          ${S.game.players.filter(p => p.id !== round.hostId).map(p => `<div class="row" style="margin-bottom:6px">${avatar(p.name, p.emoji)}<span class="grow">${esc(p.name)}</span><button class="danger" onclick="deletePlayer(${p.id})">Delete</button></div>`).join('') || '<p class="muted small">Nobody else has joined yet.</p>'}
+          ${(S.game.deletedPlayers || []).map(p => `<div class="row" style="margin-bottom:6px"><span class="grow muted">${esc(p.name)} (deleted)</span><button onclick="restorePlayer(${p.id})">Restore</button></div>`).join('')}
+          <p class="small muted">Deleting is soft: they vanish from the game and stats, but their answers are kept and restoring brings everything back. Shared across every round, not just this one.</p>
         </div>
         <div class="mt">
           <label>Import old points</label>
           <p class="small muted">One entry per line: <b>date, name, points</b> — commas or tabs, so pasting from a spreadsheet works. Dates like 2026-06-12 or 6/12/2026. Lands in this round's stats as imported points.</p>
-          <textarea id="importText" rows="5" placeholder="2026-06-12, Nina, 2&#10;2026-06-12, Eric, 1">${esc(val('importText'))}</textarea>
+          <textarea id="importText-${round.id}" rows="5" placeholder="2026-06-12, Nina, 2&#10;2026-06-12, Eric, 1">${esc(val('importText-' + round.id))}</textarea>
           <div class="row mt">
-            <label class="row small" style="font-weight:400;width:auto"><input type="checkbox" id="importCreate" ${S.importCreate ? 'checked' : ''} onchange="S.importCreate=this.checked"> create missing players</label>
-            <button onclick="importPoints()">Import</button>
+            <label class="row small" style="font-weight:400;width:auto"><input type="checkbox" id="importCreate-${round.id}" ${S.importCreate ? 'checked' : ''} onchange="S.importCreate=this.checked"> create missing players</label>
+            <button onclick="importPoints(${round.id})">Import</button>
           </div>
-          ${g.importedPoints && g.importedPoints.count ? `<p class="small muted">This round has ${g.importedPoints.count} imported entries worth ${g.importedPoints.total} pts. <button class="ghost danger" onclick="clearImports()">Delete them all</button></p>` : ''}
-          <div class="err">${esc(S.err.import || '')}</div>
+          ${round.importedPoints && round.importedPoints.count ? `<p class="small muted">This round has ${round.importedPoints.count} imported entries worth ${round.importedPoints.total} pts. <button class="ghost danger" onclick="clearImports(${round.id})">Delete them all</button></p>` : ''}
+          <div class="err">${esc(S.err[importErrKey] || '')}</div>
           ${S.importMsg ? `<p class="small" style="color:var(--accent)">${esc(S.importMsg)}</p>` : ''}
         </div>
         <div class="mt">
-          <label>Or wrap this round and start a fresh topic</label>
-          <input type="text" id="newtopic" placeholder="New topic (e.g. 90s Movies)" value="${esc(val('newtopic'))}">
-          <div class="row mt">
-            <select id="newhostSel" class="grow">${g.players.map(p => `<option value="${p.id}" ${p.id === g.me.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
-            <button class="danger" onclick="newRound()">New round</button>
-          </div>
-          <p class="small muted mt">Archives “${esc(g.round.topic)}” — its history and stats stick around.</p>
+          <label>Done with this round?</label>
+          <p class="small muted">Archives “${esc(round.topic)}” — its history and stats stick around, and other rounds keep running.</p>
+          <button class="danger" onclick="archiveRound(${round.id})">Archive this round</button>
         </div>
-        <div class="err">${esc(S.err.round || '')}</div>
+        <div class="err">${esc(S.err[roundErrKey] || '')}</div>
       </div>
     </details>
   </div>`;
@@ -836,81 +885,96 @@ async function act(fn, errKey) {
   refresh();
 }
 
-function submitGuess() {
-  const g = document.getElementById('guess').value.trim();
+function submitGuess(roundId) {
+  const el = document.getElementById(`guess-${roundId}`);
+  const g = el ? el.value.trim() : '';
   if (!g) return;
-  act(async () => { await api('/api/guess', { guess: g }); clearVal('guess'); });
+  act(async () => { await api('/api/guess', { roundId, guess: g }); clearVal(`guess-${roundId}`); }, `game:${roundId}`);
 }
-function passGuess() { act(async () => { await api('/api/guess', { guess: '' }); clearVal('guess'); }); }
+function passGuess(roundId) { act(async () => { await api('/api/guess', { roundId, guess: '' }); clearVal(`guess-${roundId}`); }, `game:${roundId}`); }
 function recallQ(id) {
   if (!confirm('Pull this question back into the queue for editing? Any guesses submitted so far are discarded.')) return;
   act(async () => {
-    await api(`/api/host/question/${id}/recall`, {});
+    const r = await api(`/api/host/question/${id}/recall`, {});
     S.game = await api('/api/state');
-    editDraft(id);
-  }, 'host');
+    const round = (S.game.rounds || []).find(x => (x.drafts || []).some(d => d.id === id));
+    editDraft(id, round ? round.id : null);
+  });
 }
 function removeQ(id) {
   if (!confirm("Remove this question? It stops counting for everyone (soft delete — the data stays in the database).")) return;
   act(async () => {
     await api(`/api/host/question/${id}/remove`, {});
     if (S.sessionDetail) S.sessionDetail = await api(`/api/session/${S.sessionDetail.id}`);
-  }, 'host');
+  });
 }
 function deletePlayer(id) {
   const p = S.game.players.find(x => x.id === id);
   if (!confirm(`Delete ${p ? p.name : 'this player'}? They disappear from the game and stats. Soft delete — restoring brings everything back.`)) return;
-  act(() => api(`/api/host/player/${id}/delete`, {}), 'round');
+  act(() => api(`/api/host/player/${id}/delete`, {}));
 }
-function restorePlayer(id) { act(() => api(`/api/host/player/${id}/restore`, {}), 'round'); }
+function restorePlayer(id) { act(() => api(`/api/host/player/${id}/restore`, {})); }
 
-async function importPoints() {
-  S.err.import = ''; S.importMsg = '';
-  const text = document.getElementById('importText').value;
-  const createMissing = document.getElementById('importCreate').checked;
+async function importPoints(roundId) {
+  const errKey = `import:${roundId}`;
+  S.err[errKey] = ''; S.importMsg = '';
+  const text = document.getElementById(`importText-${roundId}`).value;
+  const createMissing = document.getElementById(`importCreate-${roundId}`).checked;
   try {
-    const r = await api('/api/host/import', { text, createMissing });
+    const r = await api('/api/host/import', { roundId, text, createMissing });
     S.importMsg = `Imported ${r.imported} entr${r.imported === 1 ? 'y' : 'ies'}${r.created.length ? ` and created ${r.created.join(', ')}` : ''}.`;
-    clearVal('importText');
-  } catch (e) { S.err.import = e.message; }
+    clearVal(`importText-${roundId}`);
+  } catch (e) { S.err[errKey] = e.message; }
   refresh();
 }
-function clearImports() {
+function clearImports(roundId) {
   if (!confirm('Delete ALL imported points in this round? (The real game results are untouched.)')) return;
   S.importMsg = '';
-  act(() => api('/api/host/import/clear', {}), 'import');
+  act(() => api('/api/host/import/clear', { roundId }), `import:${roundId}`);
 }
-function submitChoice(i) { act(() => api('/api/choice', { choice: i })); }
-function advance(id) { act(() => api(`/api/host/question/${id}/advance`, {}), 'host'); }
-function judge(qid, pid, correct) { act(() => api('/api/host/judge', { questionId: qid, playerId: pid, correct }), 'host'); }
-function startQ(id) { act(() => api(`/api/host/question/${id}/start`, {}), 'host'); }
-function deleteQ(id) { if (confirm('Delete this question?')) act(() => api(`/api/host/question/${id}/delete`, {}), 'host'); }
-function endSession() { if (confirm('End today\'s game?')) act(() => api('/api/host/session/end', {}), 'host'); }
+function submitChoice(roundId, i) { act(() => api('/api/choice', { roundId, choice: i }), `game:${roundId}`); }
+function advance(id) { act(() => api(`/api/host/question/${id}/advance`, {})); }
+function judge(qid, pid, correct) { act(() => api('/api/host/judge', { questionId: qid, playerId: pid, correct })); }
+function startQ(id) { act(() => api(`/api/host/question/${id}/start`, {})); }
+function deleteQ(id) { if (confirm('Delete this question?')) act(() => api(`/api/host/question/${id}/delete`, {})); }
+function endSession(roundId) { if (confirm('End today\'s game?')) act(() => api('/api/host/session/end', { roundId }), `round:${roundId}`); }
 
-function transferHost() {
-  const pid = Number(document.getElementById('transferSel').value);
+function transferHost(roundId) {
+  const sel = document.getElementById(`transferSel-${roundId}`);
+  const pid = Number(sel.value);
   const p = S.game.players.find(x => x.id === pid);
-  if (!confirm(`Make ${p?.name} the host of ${S.game.round.topic}?`)) return;
-  act(() => api('/api/host/transfer', { playerId: pid }), 'round');
+  const round = S.game.rounds.find(r => r.id === roundId);
+  if (!confirm(`Make ${p?.name} the host of ${round?.topic}?`)) return;
+  act(() => api('/api/host/transfer', { roundId, playerId: pid }), `round:${roundId}`);
 }
 
-function createRound(inputId) {
-  const topic = document.getElementById(inputId).value.trim();
-  act(async () => { await api('/api/host/round', { topic }); clearVal(inputId); }, 'round');
+function archiveRound(roundId) {
+  const round = S.game.rounds.find(r => r.id === roundId);
+  if (!confirm(`Archive "${round?.topic}"? Its history and stats stick around, and other rounds keep running.`)) return;
+  act(() => api(`/api/host/round/${roundId}/archive`, {}), `round:${roundId}`);
 }
 
-function newRound() {
-  const topic = document.getElementById('newtopic').value.trim();
-  const hostId = Number(document.getElementById('newhostSel').value);
-  if (!topic) { S.err.round = 'Give the new round a topic'; render(); return; }
-  const host = S.game.players.find(p => p.id === hostId);
-  if (!confirm(`Wrap up "${S.game.round.topic}" and start "${topic}" with ${host?.name} hosting?`)) return;
-  act(async () => { await api('/api/host/round', { topic, hostId }); clearVal('newtopic'); }, 'round');
+function createRound() {
+  const topic = document.getElementById('topic0').value.trim();
+  const hostSel = document.getElementById('hostSel0');
+  const hostId = hostSel ? Number(hostSel.value) : undefined;
+  act(async () => {
+    await api('/api/host/round', { topic, hostId });
+    clearVal('topic0');
+    S.showStartRound = false;
+  }, 'startRound');
 }
 
-function saveQuestion() {
+function toggleComposer(roundId) {
+  if (S.composerRoundId === roundId) { S.composerRoundId = null; S.editingDraft = null; }
+  else { S.composerRoundId = roundId; S.editingDraft = null; clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate'); }
+  render();
+}
+
+function saveQuestion(roundId) {
   const dateEl = document.getElementById('qdate');
   const body = {
+    roundId,
     text: document.getElementById('qtext').value.trim(),
     answer: document.getElementById('qanswer').value.trim(),
     decoys: [0, 1, 2, 3].map(i => document.getElementById('decoy' + i).value.trim()).filter(Boolean),
@@ -921,15 +985,18 @@ function saveQuestion() {
     S.hostMsg = '';
     const r = await api(path, body);
     S.editingDraft = null;
+    S.composerRoundId = null;
     clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate');
     if (r.backdated) S.hostMsg = `Added to ${r.backdated} in History.`;
-  }, 'host');
+  }, `host:${roundId}`);
 }
 
-function editDraft(id) {
-  const d = S.game.drafts.find(x => x.id === id);
+function editDraft(id, roundId) {
+  const round = (S.game.rounds || []).find(r => r.id === roundId);
+  const d = round && (round.drafts || []).find(x => x.id === id);
   if (!d) return;
   S.editingDraft = id;
+  S.composerRoundId = roundId;
   draftValues.qtext = d.text;
   draftValues.qanswer = d.answer;
   const decoys = d.choices.filter((_, i) => i !== d.correctIndex);
@@ -938,7 +1005,8 @@ function editDraft(id) {
 }
 function cancelEdit() {
   S.editingDraft = null;
-  clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3');
+  S.composerRoundId = null;
+  clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate');
   render();
 }
 
@@ -1142,7 +1210,7 @@ function renderStats() {
       <h2 class="grow">Leaderboard</h2>
       <select style="width:auto" onchange="setStatsRound(this.value)">
         <option value="all" ${S.statsRound === 'all' ? 'selected' : ''}>All rounds</option>
-        ${st.rounds.map(r => `<option value="${r.id}" ${S.statsRound == r.id ? 'selected' : ''}>${esc(r.topic)}${r.status === 'active' ? ' (current)' : ''}</option>`).join('')}
+        ${st.rounds.map(r => `<option value="${r.id}" ${S.statsRound == r.id ? 'selected' : ''}>${esc(r.topic)}${r.status === 'active' ? ' (live)' : ''}</option>`).join('')}
       </select>
       <select style="width:auto" onchange="setStatsPeriod(this.value)">
         <option value="all" ${(S.statsPeriod || 'all') === 'all' ? 'selected' : ''}>All time</option>
@@ -1187,7 +1255,7 @@ function renderStats() {
 
 Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
-  startQ, deleteQ, endSession, transferHost, createRound, newRound, saveQuestion, editDraft,
+  startQ, deleteQ, endSession, transferHost, archiveRound, createRound, toggleComposer, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice,
   setStatsRound, setStatsPeriod, applyStatsRange, passGuess, removeQ, recallQ, deletePlayer,
   restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, deputyStart, deputyAdv,
