@@ -859,7 +859,16 @@ function renderRoundControls(round) {
   const importErrKey = `import:${round.id}`;
   return `<div class="card">
     <h2>Round controls — ${esc(round.topic)}</h2>
-    ${round.session ? `<button onclick="endSession(${round.id})">End today's game</button>` : '<p class="muted small">Today\'s game starts automatically when you ask the first question.</p>'}
+    <div class="mt">
+      <label for="renameTopic-${round.id}">Rename this round</label>
+      <div class="row">
+        <input type="text" id="renameTopic-${round.id}" class="grow" value="${esc(val('renameTopic-' + round.id) || round.topic)}">
+        <button onclick="renameRound(${round.id})">Rename</button>
+      </div>
+    </div>
+    <div class="mt">
+      ${round.session ? `<button onclick="endSession(${round.id})">End today's game</button>` : '<p class="muted small">Today\'s game starts automatically when you ask the first question.</p>'}
+    </div>
     <div class="mt">
       <label>Hand hosting of <b>${esc(round.topic)}</b> to…</label>
       <div class="row">
@@ -963,6 +972,16 @@ function transferHost(roundId) {
   const round = S.game.rounds.find(r => r.id === roundId);
   if (!confirm(`Make ${p?.name} the host of ${round?.topic}?`)) return;
   act(() => api('/api/host/transfer', { roundId, playerId: pid }), `round:${roundId}`);
+}
+
+function renameRound(roundId) {
+  const el = document.getElementById(`renameTopic-${roundId}`);
+  const topic = el.value.trim();
+  if (!topic) return;
+  act(async () => {
+    await api(`/api/host/round/${roundId}/rename`, { topic });
+    clearVal(`renameTopic-${roundId}`);
+  }, `round:${roundId}`);
 }
 
 function archiveRound(roundId) {
@@ -1282,7 +1301,7 @@ function renderStats() {
 
 Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
-  startQ, deleteQ, endSession, transferHost, archiveRound, createRound, toggleComposer, saveQuestion, editDraft,
+  startQ, deleteQ, endSession, transferHost, renameRound, archiveRound, createRound, toggleComposer, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice,
   setStatsRound, setStatsPeriod, applyStatsRange, passGuess, removeQ, recallQ, deletePlayer,
   restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, deputyStart, deputyAdv,

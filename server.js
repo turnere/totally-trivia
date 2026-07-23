@@ -612,6 +612,18 @@ route('POST', /^\/api\/host\/round\/(\d+)\/archive$/, async (req, res, player, m
   json(res, 200, { ok: true });
 });
 
+route('POST', /^\/api\/host\/round\/(\d+)\/rename$/, async (req, res, player, m) => {
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(Number(m[1]));
+  if (!round || round.host_id !== player.id) return fail(res, 403, 'Host only');
+  const body = await readBody(req);
+  const topic = String(body.topic || '').trim();
+  if (!topic) return fail(res, 400, 'Topic required');
+  if (topic.length > 80) return fail(res, 400, 'Keep it under 80 characters');
+  db.prepare('UPDATE rounds SET topic = ? WHERE id = ?').run(topic, round.id);
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
 route('POST', /^\/api\/host\/transfer$/, async (req, res, player) => {
   const body = await readBody(req);
   const round = requireHostOfRound(res, player, body.roundId);
