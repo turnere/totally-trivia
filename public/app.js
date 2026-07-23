@@ -505,7 +505,7 @@ function renderGame() {
       ${renderStartRoundCard(rounds.length > 0)}
       ${rounds.length ? rounds.map(renderRoundBlock).join('') : ''}
     </div>
-    <div>${renderPresenceCard()}${renderMakeupsCard()}</div>
+    <div>${renderPresenceCard()}${renderMakeupsCard()}${renderAbsencesCard()}</div>
   </div>`;
 }
 
@@ -568,6 +568,44 @@ async function playMakeup(qid) {
   await startMakeup(qid);
 }
 
+// Planned absences: "I'll be out on these dates" — a heads-up for the team, not a game rule.
+// Doesn't exempt anyone from makeups; it's just visible in advance so a host away is expected.
+function renderAbsencesCard() {
+  const list = S.game.upcomingAbsences || [];
+  return `<div class="card">
+    <h2>Planned time off</h2>
+    ${list.length ? `<ul class="scoreboard">
+      ${list.map(a => `<li>${esc(a.date)} · ${avatar(a.name, a.emoji)} ${esc(a.name)}
+        ${a.playerId === S.game.me.id ? `<span style="margin-left:auto"><button class="ghost" onclick="cancelAbsence(${a.id})">Cancel</button></span>` : ''}</li>`).join('')}
+    </ul>` : '<p class="muted small">Nobody\'s scheduled time off yet.</p>'}
+    <details class="host-tools mt">
+      <summary>I'll be out…</summary>
+      <div>
+        <label class="mt" for="absFrom">From</label>
+        <input type="date" id="absFrom" value="${esc(val('absFrom'))}">
+        <label class="mt" for="absTo">To (optional — leave blank for one day)</label>
+        <input type="date" id="absTo" value="${esc(val('absTo'))}">
+        <div class="err">${esc(S.err.absence || '')}</div>
+        <button class="primary mt" onclick="scheduleAbsence()">Mark me out</button>
+      </div>
+    </details>
+  </div>`;
+}
+
+function scheduleAbsence() {
+  const from = document.getElementById('absFrom').value;
+  const to = document.getElementById('absTo').value;
+  if (!from) { S.err.absence = 'Pick a date'; render(); return; }
+  act(async () => {
+    await api('/api/absence', { from, to: to || from });
+    clearVal('absFrom', 'absTo');
+  }, 'absence');
+}
+
+function cancelAbsence(id) {
+  act(() => api(`/api/absence/${id}/cancel`, {}), 'absence');
+}
+
 // Always-available "start a round" entry point — compact (a toggle link) once at least one
 // round is already active, expanded by default when there are none yet.
 function renderStartRoundCard(compact) {
@@ -601,7 +639,7 @@ function renderScoreboard(round) {
       ${rows.map((r, i) => `<li><span class="pos">${i + 1}</span>${avatar(r.name, r.emoji)} ${esc(r.name)}
         <span class="pts ${r.points >= 2 ? 'two' : r.points ? 'one' : 'zero'}">${r.points}</span></li>`).join('')}
     </ul>` : '<p class="muted small">No points yet today.</p>'}
-    <p class="small muted mt">Host: ${esc(round.hostName)}${round.isHost ? ' (you)' : ''}</p>
+    <p class="small muted mt">Host: ${esc(round.hostName)}${round.isHost ? ' (you)' : ''}${round.hostOutToday ? ' · marked out today — expect deputy mode' : ''}</p>
   </div>`;
 }
 
@@ -1232,8 +1270,12 @@ function renderStats() {
     ${st.rows.length ? (() => {
       const anyImported = st.rows.some(r => r.imported > 0);
       return `<div style="overflow-x:auto"><table class="stats">
-      <tr><th>Player</th><th>Points</th>${anyImported ? '<th>Imported</th>' : ''}<th>Played</th><th>Guess acc.</th><th>MC acc.</th><th>2-pointers</th><th>Makeups</th><th>Owed</th></tr>
-      ${st.rows.map((r, i) => `<tr>
+      <tr><th>Player</th><th>Points</th>${anyImported ? '<th>Imported</th>' : ''}<th>Played</th><th>Guess acc.</th><th>MC acc.</th><th>2-pointers</th><th>Made up</th><th>Owed</th></tr>
+      ${st.rows.map((r, i) => {
+        const breakdown = r.owedBreakdown || [];
+        const owedTitle = breakdown.length ? breakdown.map(b => `${b.topic}: ${b.count}`).join(', ') : '';
+        const showBreakdown = S.statsRound === 'all' && breakdown.length > 0;
+        return `<tr>
         <td>${avatar(r.name, r.emoji)} ${esc(r.name)}</td>
         <td><b>${r.points}</b></td>
         ${anyImported ? `<td>${r.imported || 0}</td>` : ''}
@@ -1242,12 +1284,15 @@ function renderStats() {
         <td>${pct(r.mcRight, r.answered)}</td>
         <td>${r.twoPointers}</td>
         <td>${r.makeups}</td>
-        <td>${r.owed ? `<b style="color:var(--bad)">${r.owed}</b>` : '0'}</td>
-      </tr>`).join('')}
+        <td ${owedTitle ? `title="${esc(owedTitle)}"` : ''}>${r.owed ? `<b style="color:var(--bad)">${r.owed}</b>` : '0'}
+          ${showBreakdown ? `<div class="small muted">${breakdown.map(b => `${esc(b.topic)} ×${b.count}`).join(', ')}</div>` : ''}</td>
+      </tr>`;
+      }).join('')}
     </table></div>`;
     })() : `<p class="empty">${(S.statsPeriod && S.statsPeriod !== 'all') ? 'No points in this period.' : 'No finished questions yet — stats appear after your first game.'}</p>`}
     <p class="small muted mt">Guess acc. = written guesses judged correct. 2-pointers = guessed it and stuck with it.
-      Played includes pre-app days covered by imports; accuracy only counts in-app answers. Owed = makeups outstanding.</p>
+      Played includes pre-app days covered by imports; accuracy only counts in-app answers.
+      Made up = completed makeups (a history, doesn't change). Owed = makeups still outstanding — filter by round above to see just one topic.</p>
   </div>`;
 }
 
@@ -1259,6 +1304,7 @@ Object.assign(window, {
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice,
   setStatsRound, setStatsPeriod, applyStatsRange, passGuess, removeQ, recallQ, deletePlayer,
   restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, deputyStart, deputyAdv,
+  scheduleAbsence, cancelAbsence,
   S, render,
 });
 

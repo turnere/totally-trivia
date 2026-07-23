@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS questions (
   asked_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS absences (
+  id INTEGER PRIMARY KEY,
+  player_id INTEGER NOT NULL REFERENCES players(id),
+  date TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(player_id, date)
+);
 CREATE TABLE IF NOT EXISTS legacy_points (
   id INTEGER PRIMARY KEY,
   round_id INTEGER REFERENCES rounds(id),
@@ -316,6 +323,7 @@ function buildRoundState(round, viewer) {
     importedPoints: isHost
       ? db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(points), 0) AS total FROM legacy_points WHERE round_id = ?').get(round.id)
       : undefined,
+    hostOutToday: !!db.prepare('SELECT 1 FROM absences WHERE player_id = ? AND date = ?').get(round.host_id, todayStr()),
   };
 }
 
@@ -328,6 +336,11 @@ function buildState(viewer) {
     players: q.allPlayers.all(),
     rounds,
     deletedPlayers: isHost ? q.deletedPlayers.all() : undefined,
+    upcomingAbsences: db.prepare(`
+      SELECT a.id, a.player_id AS playerId, a.date, p.name, p.emoji FROM absences a
+      JOIN players p ON p.id = a.player_id
+      WHERE a.date >= ? AND p.deleted = 0
+      ORDER BY a.date, p.name`).all(todayStr()),
     presence: {
       online: [...new Set([...sseClients].map(c => c.playerId).filter(id => id > 0))],
       active: [...lastSeen.entries()].filter(([, t]) => Date.now() - t < 120000).map(([id]) => id),
@@ -539,6 +552,34 @@ route('POST', /^\/api\/avatar$/, async (req, res, player) => {
   const bird = body.avatar === '' || BIRD_AVATARS.has(body.avatar) ? body.avatar : null;
   if (bird === null) return fail(res, 400, 'No such bird');
   db.prepare('UPDATE players SET emoji = ? WHERE id = ?').run(bird, player.id);
+  broadcast();
+  json(res, 200, { ok: true });
+});
+
+// Schedule upcoming days you know you'll be out — visible to the whole team ahead of time,
+// so a host away that day is expected (deputy mode) rather than a surprise.
+route('POST', /^\/api\/absence$/, async (req, res, player) => {
+  const body = await readBody(req);
+  const from = parseImportDate(body.from || '');
+  const to = body.to ? parseImportDate(body.to) : from;
+  if (!from || !to) return fail(res, 400, 'Bad date (use YYYY-MM-DD or M/D/YYYY)');
+  if (to < from) return fail(res, 400, '"To" is before "from"');
+  if (from < todayStr()) return fail(res, 400, "Can't schedule a day that's already passed");
+  const days = [];
+  for (let d = new Date(`${from}T00:00:00`); d <= new Date(`${to}T00:00:00`); d.setDate(d.getDate() + 1)) {
+    days.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  }
+  if (days.length > 60) return fail(res, 400, 'That range is too long (max 60 days)');
+  const ins = db.prepare('INSERT OR IGNORE INTO absences (player_id, date) VALUES (?, ?)');
+  for (const d of days) ins.run(player.id, d);
+  broadcast();
+  json(res, 200, { ok: true, added: days.length });
+});
+
+route('POST', /^\/api\/absence\/(\d+)\/cancel$/, async (req, res, player, m) => {
+  const row = db.prepare('SELECT * FROM absences WHERE id = ?').get(Number(m[1]));
+  if (!row || row.player_id !== player.id) return fail(res, 404, 'No such absence');
+  db.prepare('DELETE FROM absences WHERE id = ?').run(row.id);
   broadcast();
   json(res, 200, { ok: true });
 });
@@ -1139,7 +1180,10 @@ route('GET', /^\/api\/stats$/, (req, res) => {
     if (s) s.played += 1;
   }
   // Outstanding makeups: finished questions in scope with no finalized answer and no coverage.
+  // Broken down per round so "who owes what, where" doesn't require re-filtering to see —
+  // a lumped number across concurrent rounds reads as confusing next to "Made up".
   const hostByRound = new Map(db.prepare('SELECT id, host_id FROM rounds').all().map(r => [r.id, r.host_id]));
+  const topicByRound = new Map(db.prepare('SELECT id, topic FROM rounds').all().map(r => [r.id, r.topic]));
   let finishedQs = db.prepare(`
     SELECT qq.id, qq.round_id, s.date FROM questions qq JOIN sessions s ON s.id = qq.session_id
     WHERE qq.deleted = 0 AND qq.phase IN ('results','closed')`).all();
@@ -1149,8 +1193,12 @@ route('GET', /^\/api\/stats$/, (req, res) => {
   const doneSet = new Set(rows.map(r => `${r.question_id}:${r.player_id}`));
   const covSet = new Set(coveredRows.map(c => `${c.qid}:${c.player_id}`));
   for (const [pid, s] of byPlayer) {
-    s.owed = finishedQs.filter(qq =>
-      hostByRound.get(qq.round_id) !== pid && !doneSet.has(`${qq.id}:${pid}`) && !covSet.has(`${qq.id}:${pid}`)).length;
+    const owedQs = finishedQs.filter(qq =>
+      hostByRound.get(qq.round_id) !== pid && !doneSet.has(`${qq.id}:${pid}`) && !covSet.has(`${qq.id}:${pid}`));
+    s.owed = owedQs.length;
+    const byRound = new Map();
+    for (const qq of owedQs) byRound.set(qq.round_id, (byRound.get(qq.round_id) || 0) + 1);
+    s.owedBreakdown = [...byRound.entries()].map(([rid, count]) => ({ roundId: rid, topic: topicByRound.get(rid), count }));
   }
   const out = [...byPlayer.values()].filter(s => s.played > 0 || s.points > 0 || s.owed > 0)
     .sort((a, b) => b.points - a.points || b.twoPointers - a.twoPointers || a.name.localeCompare(b.name));
