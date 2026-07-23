@@ -20,6 +20,8 @@ const S = {
   statsRound: 'all',
   err: {},                   // keyed error messages, keyed per-round where relevant ("game:12", "host:12"...)
   celebratedQs: new Set(),   // question ids already confetti'd, across all rounds
+  qMode: 'mc',                // question composer: 'mc' or 'tf' (true/false)
+  tfAnswer: 'True',           // which side is correct while composing a true/false question
 };
 
 const AV_COLORS = ['#3574e3', '#ff5050', '#3d4fd7', '#a8850b', '#1b24a2', '#797575', '#050039', '#444444'];
@@ -831,12 +833,22 @@ function renderHostTools(round) {
       ${composerOpen ? `<div>
         <label for="qtext">Question</label>
         <input type="text" id="qtext" placeholder="What bird can fly backwards?" value="${esc(val('qtext'))}">
+        <div class="row mt">
+          <button class="${S.qMode !== 'tf' ? 'sel' : ''}" onclick="setQMode('mc')">Multiple choice</button>
+          <button class="${S.qMode === 'tf' ? 'sel' : ''}" onclick="setQMode('tf')">True / False</button>
+        </div>
+        ${S.qMode === 'tf' ? `
+        <label class="mt">Correct answer</label>
+        <div class="row">
+          <button class="${S.tfAnswer !== 'False' ? 'sel' : ''}" onclick="S.tfAnswer='True';render()">True</button>
+          <button class="${S.tfAnswer === 'False' ? 'sel' : ''}" onclick="S.tfAnswer='False';render()">False</button>
+        </div>` : `
         <label class="mt" for="qanswer">Correct answer</label>
         <input type="text" id="qanswer" placeholder="Hummingbird" value="${esc(val('qanswer'))}">
         <label class="mt">Wrong choices (2–4, they get shuffled with the answer)</label>
         <div class="decoy-inputs">
           ${[0, 1, 2, 3].map(i => `<input type="text" id="decoy${i}" placeholder="Decoy ${i + 1}${i > 1 ? ' (optional)' : ''}" value="${esc(val('decoy' + i))}">`).join('')}
-        </div>
+        </div>`}
         <label class="mt" for="qschedule">Schedule for (optional)</label>
         <input type="text" id="qschedule" placeholder="YYYY-MM-DD — e.g. a day you know you'll be out" value="${esc(val('qschedule'))}">
         <p class="small muted">Queues it as usual, but on that date it jumps to the top of the queue — so whoever's around that day (you or a deputy) has the right one ready to ask.</p>
@@ -1012,20 +1024,27 @@ function createRound() {
   }, 'startRound');
 }
 
+function setQMode(mode) { S.qMode = mode; render(); }
+
 function toggleComposer(roundId) {
   if (S.composerRoundId === roundId) { S.composerRoundId = null; S.editingDraft = null; }
-  else { S.composerRoundId = roundId; S.editingDraft = null; clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate', 'qschedule'); }
+  else {
+    S.composerRoundId = roundId; S.editingDraft = null; S.qMode = 'mc'; S.tfAnswer = 'True';
+    clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate', 'qschedule');
+  }
   render();
 }
 
 function saveQuestion(roundId) {
   const dateEl = document.getElementById('qdate');
   const scheduleEl = document.getElementById('qschedule');
+  const isTF = S.qMode === 'tf';
   const body = {
     roundId,
     text: document.getElementById('qtext').value.trim(),
-    answer: document.getElementById('qanswer').value.trim(),
-    decoys: [0, 1, 2, 3].map(i => document.getElementById('decoy' + i).value.trim()).filter(Boolean),
+    answer: isTF ? S.tfAnswer : document.getElementById('qanswer').value.trim(),
+    decoys: isTF ? [S.tfAnswer === 'False' ? 'True' : 'False']
+      : [0, 1, 2, 3].map(i => document.getElementById('decoy' + i).value.trim()).filter(Boolean),
     date: dateEl ? dateEl.value.trim() : '',
     scheduledFor: scheduleEl ? scheduleEl.value.trim() : '',
   };
@@ -1035,9 +1054,16 @@ function saveQuestion(roundId) {
     const r = await api(path, body);
     S.editingDraft = null;
     S.composerRoundId = null;
+    S.qMode = 'mc';
     clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate', 'qschedule');
     if (r.backdated) S.hostMsg = `Added to ${r.backdated} in History.`;
   }, `host:${roundId}`);
+}
+
+// A question whose two choices are exactly "True"/"False" is treated as true/false in the
+// composer — no separate stored flag, just inferred from the shape.
+function isTFQuestion(d) {
+  return d.choices.length === 2 && d.choices.every(c => ['true', 'false'].includes(String(c).trim().toLowerCase()));
 }
 
 function editDraft(id, roundId) {
@@ -1047,15 +1073,24 @@ function editDraft(id, roundId) {
   S.editingDraft = id;
   S.composerRoundId = roundId;
   draftValues.qtext = d.text;
-  draftValues.qanswer = d.answer;
   draftValues.qschedule = d.scheduledFor || '';
-  const decoys = d.choices.filter((_, i) => i !== d.correctIndex);
-  [0, 1, 2, 3].forEach(i => { draftValues['decoy' + i] = decoys[i] || ''; });
+  if (isTFQuestion(d)) {
+    S.qMode = 'tf';
+    S.tfAnswer = d.answer.trim().toLowerCase() === 'false' ? 'False' : 'True';
+    draftValues.qanswer = '';
+    [0, 1, 2, 3].forEach(i => { draftValues['decoy' + i] = ''; });
+  } else {
+    S.qMode = 'mc';
+    draftValues.qanswer = d.answer;
+    const decoys = d.choices.filter((_, i) => i !== d.correctIndex);
+    [0, 1, 2, 3].forEach(i => { draftValues['decoy' + i] = decoys[i] || ''; });
+  }
   render();
 }
 function cancelEdit() {
   S.editingDraft = null;
   S.composerRoundId = null;
+  S.qMode = 'mc';
   clearVal('qtext', 'qanswer', 'decoy0', 'decoy1', 'decoy2', 'decoy3', 'qdate', 'qschedule');
   render();
 }
@@ -1312,7 +1347,7 @@ function renderStats() {
 
 Object.assign(window, {
   logout, setView, doVerify, doLogin, doCreate, submitGuess, submitChoice, advance, judge,
-  startQ, deleteQ, endSession, transferHost, renameRound, archiveRound, createRound, toggleComposer, saveQuestion, editDraft,
+  startQ, deleteQ, endSession, transferHost, renameRound, archiveRound, createRound, toggleComposer, setQMode, saveQuestion, editDraft,
   cancelEdit, openSession, startMakeup, exitMakeup, makeupGuess, makeupChoice,
   setStatsRound, setStatsPeriod, applyStatsRange, passGuess, removeQ, recallQ, deletePlayer,
   restorePlayer, playMakeup, setMyBird, importPoints, clearImports, tvLogin, deputyStart, deputyAdv,

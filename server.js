@@ -666,7 +666,7 @@ function parseQuestionBody(body) {
   const answer = String(body.answer || '').trim();
   const decoys = (Array.isArray(body.decoys) ? body.decoys : []).map(d => String(d).trim()).filter(Boolean);
   if (!text || !answer) return { error: 'Question and answer are required' };
-  if (decoys.length < 2 || decoys.length > 4) return { error: 'Give 2–4 wrong choices' };
+  if (decoys.length < 1 || decoys.length > 4) return { error: 'Give 1–4 wrong choices (1 for a true/false question)' };
   return { text, answer, decoys };
 }
 

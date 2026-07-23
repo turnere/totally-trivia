@@ -94,6 +94,7 @@ button.ghost.danger { color: var(--bad); }
 button.ghost.danger:hover { color: #d63a3a; }
 button.danger { color: var(--bad); border-color: var(--bad-soft); }
 button:disabled { opacity: 0.5; cursor: default; pointer-events: none; }
+button.sel { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 button.big { padding: 12px 24px; font-size: 1.05rem; }
 
 input[type="text"], input[type="password"], input[type="date"], select, textarea {
